@@ -101,6 +101,7 @@ export default function App() {
   const [translatePopup, setTranslatePopup] = useState({ visible: false, text: '' });
   const [practiceState, setPracticeState] = useState(null); // { targetWord, options: [], correctIndex, nextIndex }
   const [lastDialogueMode, setLastDialogueMode] = useState(false);
+  const [generatingStory, setGeneratingStory] = useState(false);
 
   const tts = useSpeech();
   const animationTimerRef = useRef(null);
@@ -467,6 +468,7 @@ export default function App() {
   }
   function acceptPlot() {
     if (!language) return alert('No language selected.');
+    console.log('acceptPlot clicked — language:', language, 'genres:', genres);
     console.log('User accepted plot for', language, 'genres', genres);
 
     // mark language as started and save selected genres
@@ -489,20 +491,30 @@ export default function App() {
   function handleGenerateNewStory() {
     // Prefer remote LLM if available, otherwise local generator. Persist result into episodes[language].
     (async () => {
-      const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits });
-      // generate a fresh vocab pack for this episode as well (so each generated plot proposal shows a lesson)
-      const vocab = await (import.meta.env.VITE_OPENAI_KEY ? remoteGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name }) : Promise.resolve(aiGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name })));
-      // apply vocab to state so preview shows correct underlines
-      setVocabPack(vocab);
-      const dialogues = aiGenerateDialogues({ plot: story, avatarData: avatar, buddy: buddyName, lang: language, vocabPack: vocab });
-      setPlotSummary(story);
-      setStoryDialogues(dialogues);
-      setDialogueIndex(0);
-      // persist generated plot and dialogues into episodes
-      setEpisodes(prev => {
-        const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: genres };
-        return { ...prev, [language]: { ...langData, generatedPlot: story, generatedDialogues: dialogues, generatedVocab: vocab } };
-      });
+      try {
+        if (!language) return alert('Select a language first');
+        console.log('Generate new story clicked — language:', language, 'genres:', genres);
+        setGeneratingStory(true);
+        const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits });
+        // generate a fresh vocab pack for this episode as well (so each generated plot proposal shows a lesson)
+        const vocab = await (import.meta.env.VITE_OPENAI_KEY ? remoteGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name }) : Promise.resolve(aiGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name })));
+        // apply vocab to state so preview shows correct underlines
+        setVocabPack(vocab);
+        const dialogues = aiGenerateDialogues({ plot: story, avatarData: avatar, buddy: buddyName, lang: language, vocabPack: vocab });
+        setPlotSummary(story);
+        setStoryDialogues(dialogues);
+        setDialogueIndex(0);
+        // persist generated plot and dialogues into episodes
+        setEpisodes(prev => {
+          const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: genres };
+          return { ...prev, [language]: { ...langData, generatedPlot: story, generatedDialogues: dialogues, generatedVocab: vocab } };
+        });
+      } catch (e) {
+        console.error('Failed generating new story', e);
+        alert('Failed to generate a new story. See console for details.');
+      } finally {
+        setGeneratingStory(false);
+      }
     })();
   }
 
@@ -769,8 +781,8 @@ export default function App() {
         <h1 style={styles.title}>Plot summary</h1>
         <p style={styles.summaryText}>{plotSummary}</p>
         <div style={{ display: 'flex', gap: 12 }}>
-          <button onClick={acceptPlot} style={{ ...styles.continueButton, backgroundColor: '#4CAF50' }}>Continue to Story</button>
-          <button onClick={handleGenerateNewStory} style={{ padding: '12px 20px', borderRadius: 12, background: '#EEE', border: 'none' }}>Generate a New Story</button>
+          <button type="button" onClick={acceptPlot} style={{ ...styles.continueButton, backgroundColor: '#4CAF50' }}>Continue to Story</button>
+          <button type="button" onClick={handleGenerateNewStory} disabled={generatingStory} style={{ padding: '12px 20px', borderRadius: 12, background: generatingStory ? '#DDD' : '#EEE', border: 'none' }}>{generatingStory ? 'Generating…' : 'Generate a New Story'}</button>
         </div>
       </div>
     );
