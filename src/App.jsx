@@ -138,16 +138,31 @@ export default function App() {
   // Utility: create React nodes with underlined vocab tokens. Matches vocabPack words and meanings.
   function highlightVocab(text) {
     if (!vocabPack || vocabPack.length === 0) return text;
-    // build regex from vocab words and meanings (escape)
+    // Build a regex that avoids matching substrings inside larger words.
+    // Strategy:
+    // 1) collect tokens (word and meaning), sort by length desc so longer matches win
+    // 2) for tokens that are purely word characters use word boundaries \b
+    // 3) for others use (?<!\w) and (?!\w) so we don't match inside words
     const tokens = [];
     vocabPack.forEach(v => {
-      if (v.word) tokens.push(escapeRegExp(v.word));
-      if (v.meaning) tokens.push(escapeRegExp(v.meaning));
+      if (v.word) tokens.push(v.word);
+      if (v.meaning) tokens.push(v.meaning);
     });
     if (tokens.length === 0) return text;
-    const re = new RegExp(`(${tokens.join('|')})`, 'gi');
+    // sort by length so "por favor" wins before "por"
+    const unique = Array.from(new Set(tokens)).sort((a, b) => b.length - a.length);
     const parts = [];
     let lastIndex = 0;
+
+    // Build a combined regex where each alternative is wrapped with appropriate boundaries
+    const escapedAlts = unique.map(tok => {
+      const esc = escapeRegExp(tok);
+      // If token is only letters/numbers/underscore use \b, otherwise use lookaround
+      if (/^[A-Za-z0-9_]+$/.test(tok)) return `\\b${esc}\\b`;
+      return `(?<!\\w)${esc}(?!\\w)`;
+    });
+    const re = new RegExp(`(${escapedAlts.join('|')})`, 'gi');
+
     let m;
     while ((m = re.exec(text)) !== null) {
       const idx = m.index;
@@ -300,6 +315,53 @@ export default function App() {
     return full;
   }
 
+  // Local pseudo-AI generator for vocabulary for an episode. Produces 4-7 words/phrases
+  function aiGenerateVocab({ lang, episode = 1, genresList = [], avatarName = '' }) {
+    // seed using language + episode to make deterministically different packs per episode
+    let seed = (lang + '::' + episode + '::' + genresList.join('|') + '::' + avatarName).split('').reduce((s,c)=>s + c.charCodeAt(0), 0);
+    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    const common = {
+      Spanish: ['hola','gracias','por favor','amigo','mercado','calle','tram'],
+      French: ['bonjour','merci','s\'il vous plaît','ami','marché','rue','tramway'],
+      Japanese: ['こんにちは','ありがとう','お願いします','友達','市場','通り','電車']
+    };
+    const pool = common[lang] || common['Spanish'];
+    // pick 5 unique items, and create meanings simple English placeholders
+    const count = Math.max(4, Math.min(7, Math.round(4 + rnd() * 3)));
+    const chosen = [];
+    const used = new Set();
+    while (chosen.length < count) {
+      const c = pool[Math.floor(rnd() * pool.length)];
+      if (used.has(c)) continue;
+      used.add(c);
+      chosen.push({ word: c, meaning: `(${lang}) ${c}`, examples: [`Example: ${c}`] });
+    }
+    return chosen;
+  }
+
+  // Remote vocab generator wrapper (optional) - uses OpenAI if key present, otherwise fallback
+  async function remoteGenerateVocab({ lang, episode = 1, genresList = [], avatarName = '' }) {
+    try {
+      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
+      if (!key) throw new Error('No OpenAI key');
+      const prompt = `Generate 5 short vocabulary entries (word and short English meaning) useful for an episode ${episode} in ${lang}. Output JSON array with objects {"word":"...","meaning":"...","examples":[...]}`;
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 300 })
+      });
+      if (!res.ok) throw new Error('LLM call failed');
+      const data = await res.json();
+      const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || data.choices?.[0]?.text || '';
+      // try to parse JSON from response
+      const parsed = JSON.parse(txt);
+      return parsed.map(p => ({ word: p.word, meaning: p.meaning, examples: p.examples || [] }));
+    } catch (e) {
+      console.warn('Remote vocab failed, falling back to local', e);
+      return aiGenerateVocab({ lang, episode, genresList, avatarName });
+    }
+  }
+
   // Optional remote LLM call (OpenAI) — only used if VITE_OPENAI_KEY is set at build/runtime.
   async function remoteGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [] }) {
     try {
@@ -322,64 +384,84 @@ export default function App() {
   }
 
   function aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [] }) {
-    // Produce 100 dialogue entries with occasional interactive choices using vocabPack
+    // Produce ~100 dialogue entries with a beginning/middle/end arc.
     const aName = avatarData.name || 'Traveler';
     const bName = buddy || 'Buddy';
     const locals = ['Vendor', 'Old Friend', 'Mysterious Caller', 'Passerby', 'Neighbour'];
     const dialogues = [];
     // seed for deterministic variation
-    let seed = (plot || '').split('').reduce((s,c)=>s + c.charCodeAt(0), 0) + (aName.length || 0);
+    let seed = (plot || '').split('').reduce((s,c)=>s + c.charCodeAt(0), 0) + (aName.length || 0) + Date.now() % 1000;
     const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
 
-    const templates = {
-      open: [`${bName}: Have you seen the mural by the harbor?`, `${aName}: The city smells like rain and coffee this morning.`],
-      smalltalk: [`${locals[0]}: The market is louder than usual.`, `${bName}: I like the way the light hits the canal at noon.`, `${aName}: I keep misplacing my map.`],
-      hint: [`${bName}: There's someone who remembers old names.`, `${locals[1]}: Your face looks familiar, have we met?`],
-      threat: [`${locals[2]}: Some questions stir trouble.`, `${locals[3]}: Best to mind your own business.`],
-      resolve: [`${bName}: Let's check the ledger at the cafe.`, `${aName}: Okay, but quietly.`]
+    const opening = [`${bName}: Have you seen the mural by the harbor?`, `${aName}: The city smells like rain and coffee this morning.`];
+    const middle = [`${locals[0]}: The market is louder than usual.`, `${bName}: I like the way the light hits the canal at noon.`, `${aName}: I keep misplacing my map.`, `${locals[1]}: Your face looks familiar, have we met?`, `${locals[2]}: Some questions stir trouble.`];
+    const conflict = [`${bName}: There's someone who remembers old names.`, `${locals[3]}: Best to mind your own business.`, `${aName}: I found a torn letter.`];
+    const resolution = [`${bName}: Let's check the ledger at the cafe.`, `${aName}: Okay, but quietly.`, `${locals[4]}: I can point you to the alley.`];
+
+    const usedSet = new Set();
+
+    // helper to push unique lines
+    const pushUnique = (speaker, text, choices=null) => {
+      const key = `${speaker}|${text}`;
+      if (usedSet.has(key)) return false;
+      usedSet.add(key);
+      dialogues.push({ speaker, text, choices });
+      return true;
     };
 
-    for (let i = 0; i < 100; i++) {
-      const p = rnd();
-      let text;
-      if (i < 2) text = templates.open[i] || `${bName}: Hello.`;
-      else if (p < 0.25) text = templates.smalltalk[Math.floor(rnd() * templates.smalltalk.length)];
-      else if (p < 0.5) text = templates.hint[Math.floor(rnd() * templates.hint.length)];
-      else if (p < 0.8) text = templates.threat[Math.floor(rnd() * templates.threat.length)];
-      else text = templates.resolve[Math.floor(rnd() * templates.resolve.length)];
+    // Build arc: opening (5-8 lines), middle (~70-85), conflict (~8-12), resolution (5-8)
+    const openCount = Math.max(3, Math.min(8, Math.round(4 + rnd() * 4)));
+    for (let i=0;i<openCount;i++) {
+      const t = opening[i % opening.length];
+      const speaker = i % 2 === 0 ? bName : aName;
+      pushUnique(speaker, t.replace(new RegExp(`^${speaker}:\s*`), ''));
+    }
 
-      // Occasionally insert a vocab word into the text to highlight learning
-      if (vp && vp.length && rnd() > 0.6) {
+    const midCount = Math.max(60, Math.min(85, Math.round(60 + rnd() * 25)));
+    for (let i=0;i<midCount;i++) {
+      const t = middle[Math.floor(rnd() * middle.length)];
+      const sp = (i % 3 === 0) ? bName : (i % 3 === 1) ? aName : locals[i % locals.length];
+      let line = t.replace(new RegExp(`^${sp}:\s*`), '');
+      // occasionally insert a vocab word but ensure we don't insert partial matches
+      if (vp && vp.length && rnd() > 0.7) {
         const v = vp[Math.floor(rnd() * vp.length)];
-        // Insert the foreign word into the line naturally
-        text = text.replace(/\.$/, '');
-        text = `${text} — ${v.word}.`;
+        // append as a clear token
+        line = `${line.replace(/\.$/, '')} — ${v.word}.`;
       }
-
-      // Some entries include interactive choices (approx 12% of entries)
+      // sometimes add a small choice
       let choices = null;
-      if (rnd() > 0.88) {
-        // create either a practice choice (if vp available) or simple branching
-        if (vp && vp.length && rnd() > 0.4) {
+      if (rnd() > 0.92) {
+        if (vp && vp.length && rnd() > 0.5) {
           const v = vp[Math.floor(rnd() * vp.length)];
-          choices = [
-            { text: `Respond using "${v.word}"`, practiceWord: v.word, nextDelta: 1 },
-            { text: `Say: I need more time.`, nextDelta: 2 }
-          ];
+          choices = [ { text: `Respond using "${v.word}"`, practiceWord: v.word, nextDelta: 1 }, { text: `Say: I need more time.`, nextDelta: 2 } ];
         } else {
-          choices = [
-            { text: `Agree`, nextDelta: 1 },
-            { text: `Decline`, nextDelta: 1 }
-          ];
+          choices = [ { text: `Agree`, nextDelta: 1 }, { text: `Decline`, nextDelta: 1 } ];
         }
       }
-
-      // Alternate speakers
-      const speaker = i % 3 === 0 ? bName : i % 3 === 1 ? aName : locals[i % locals.length];
-      // Normalize text so it doesn't duplicate speaker
-      const cleaned = text.replace(new RegExp(`^${speaker}:\s*`), '');
-      dialogues.push({ speaker, text: cleaned, choices });
+      pushUnique(sp, line, choices);
     }
+
+    const conflictCount = Math.max(6, Math.min(12, Math.round(6 + rnd() * 6)));
+    for (let i=0;i<conflictCount;i++) {
+      const t = conflict[i % conflict.length];
+      const sp = i % 2 === 0 ? locals[i % locals.length] : bName;
+      pushUnique(sp, t.replace(new RegExp(`^${sp}:\s*`), ''));
+    }
+
+    const resCount = Math.max(4, Math.min(8, Math.round(4 + rnd() * 4)));
+    for (let i=0;i<resCount;i++) {
+      const t = resolution[i % resolution.length];
+      const sp = i % 2 === 0 ? bName : aName;
+      pushUnique(sp, t.replace(new RegExp(`^${sp}:\s*`), ''));
+    }
+
+    // Ensure we have about 100 dialogues; trim or expand slightly
+    while (dialogues.length < 90) {
+      const sp = locals[Math.floor(rnd() * locals.length)];
+      const t = `A small detail hints at something larger.`;
+      pushUnique(sp, t);
+    }
+    if (dialogues.length > 110) dialogues.length = 110;
 
     return dialogues;
   }
@@ -408,14 +490,18 @@ export default function App() {
     // Prefer remote LLM if available, otherwise local generator. Persist result into episodes[language].
     (async () => {
       const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits });
-      const dialogues = aiGenerateDialogues({ plot: story, avatarData: avatar, buddy: buddyName, lang: language, vocabPack });
+      // generate a fresh vocab pack for this episode as well (so each generated plot proposal shows a lesson)
+      const vocab = await (import.meta.env.VITE_OPENAI_KEY ? remoteGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name }) : Promise.resolve(aiGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name })));
+      // apply vocab to state so preview shows correct underlines
+      setVocabPack(vocab);
+      const dialogues = aiGenerateDialogues({ plot: story, avatarData: avatar, buddy: buddyName, lang: language, vocabPack: vocab });
       setPlotSummary(story);
       setStoryDialogues(dialogues);
       setDialogueIndex(0);
       // persist generated plot and dialogues into episodes
       setEpisodes(prev => {
         const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: genres };
-        return { ...prev, [language]: { ...langData, generatedPlot: story, generatedDialogues: dialogues } };
+        return { ...prev, [language]: { ...langData, generatedPlot: story, generatedDialogues: dialogues, generatedVocab: vocab } };
       });
     })();
   }
