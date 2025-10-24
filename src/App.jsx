@@ -136,18 +136,15 @@ export default function App() {
     return vocabPack.find(v => (v.word && v.word.toLowerCase() === lower) || (v.meaning && v.meaning.toLowerCase() === lower));
   }
 
-  // Utility: create React nodes with underlined vocab tokens. Matches vocabPack words and meanings.
+  // Utility: create React nodes with underlined vocab tokens. Only underlines the foreign language words (not English meanings).
+  // Fixed to avoid substring matches using word boundaries
   function highlightVocab(text) {
     if (!vocabPack || vocabPack.length === 0) return text;
-    // Build a regex that avoids matching substrings inside larger words.
-    // Strategy:
-    // 1) collect tokens (word and meaning), sort by length desc so longer matches win
-    // 2) for tokens that are purely word characters use word boundaries \b
-    // 3) for others use (?<!\w) and (?!\w) so we don't match inside words
+    // Build a regex that avoids matching substrings inside larger words using word boundaries
     const tokens = [];
     vocabPack.forEach(v => {
+      // Only add the foreign language word, NOT the English meaning
       if (v.word) tokens.push(v.word);
-      if (v.meaning) tokens.push(v.meaning);
     });
     if (tokens.length === 0) return text;
     // sort by length so "por favor" wins before "por"
@@ -230,7 +227,7 @@ export default function App() {
         const existing = prev[language] || { unlocked: [1], completed: [], started: false, genres: [] };
         return { ...prev, [language]: { ...existing, genres: genres } };
       });
-      generatePlotSummary(language, genres);
+      generateAIPlotSummary(language, genres);
       setScreen('plot');
       return;
     }
@@ -254,8 +251,8 @@ export default function App() {
         // create a placeholder entry for this language
         return { ...prev, [lang]: { unlocked: [1], completed: [], started: false, genres: genres } };
       });
-      // Use the current genres (picked before language selection) to generate the plot
-      generatePlotSummary(lang, genres);
+      // Use AI to generate the initial plot
+      generateAIPlotSummary(lang, genres);
       setJustCompletedGenres(false);
       setScreen('plot');
       return;
@@ -285,7 +282,7 @@ export default function App() {
     if (existing && existing.genres && existing.genres.length) {
       setGenres(existing.genres);
       // go directly to plot if genres already set (but not started) — user may want to re-check plot
-      generatePlotSummary(lang, existing.genres);
+      generateAIPlotSummary(lang, existing.genres);
       setScreen('plot');
     } else {
       // Ask for genres first (normal flow when switching languages later)
@@ -293,190 +290,297 @@ export default function App() {
       setScreen('genres');
     }
   }
-  function generatePlotSummary(lang, genresList) {
-    const g = genresList && genresList.length ? genresList.join(', ') : 'slice-of-life';
-    const summary = `Plot preview — Genre(s): ${g}. You arrive in a ${lang}-speaking city to pursue a ${g} story: unexpected friendships, small conflicts, and cinematic moments that teach you ${lang}. Do you want to start this plot?`;
-    console.log('Generated plot summary:', summary);
-    setPlotSummary(summary);
+
+  // Generate AI-powered plot summary using OpenAI
+  function generateAIPlotSummary(lang, genresList) {
+    setGeneratingStory(true);
+    setPlotSummary('Generating your unique story...');
+    
+    (async () => {
+      try {
+        const story = await aiGenerateStory({ 
+          lang, 
+          genresList, 
+          avatarData: avatar, 
+          buddy: buddyName || 'a local friend', 
+          hobbies: avatar.hobbies, 
+          traits: avatar.traits 
+        });
+        setPlotSummary(story);
+      } catch (e) {
+        console.error('Failed to generate AI plot:', e);
+        // Fallback to simple plot - using avatar name
+        const g = genresList && genresList.length ? genresList.join(', ') : 'slice-of-life';
+        const userName = avatar.name || 'You';
+        const summary = `Plot preview — Genre(s): ${g}. ${userName} arrives in a ${lang}-speaking city to pursue a ${g} story: unexpected friendships, small conflicts, and cinematic moments that teach ${userName} ${lang}. Do you want to start this plot?`;
+        setPlotSummary(summary);
+      } finally {
+        setGeneratingStory(false);
+      }
+    })();
   }
 
-  // --- Embedded AI (local) generator: creates a unique story rather than just summarizing inputs.
-  function aiGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [] }) {
-    // Simple deterministic-ish pseudo-AI writer using templates and seeded randomness
-  let seed = (genresList.join('|') + '::' + (hobbies || []).join('|') + '::' + (avatarData.name || '')).split('').reduce((s,c)=>s+ c.charCodeAt(0), 0);
-  const rand = (n=1) => { seed = (seed * 9301 + 49297) % 233280; return Math.abs(seed / 233280) * n; };
-    // Use stronger, handcrafted prose mixing in user choices
-    const opening = `On a humid morning in a ${lang}-speaking port, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and an old ticket to a life that might be waiting.`;
-    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a secret gallery, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
-    const conflict = `The city doesn't give up answers easily. Small betrayals, a mysterious figure who remembers your family name, and a spilled map at a midnight mercado force choices that test honesty, courage and the language you're learning.`;
-    const close = `By the time spring arrives, what started as a lesson in words becomes a lesson in belonging.`;
-    // Combine and add unique beats using traits to color characters
-    const traitBeat = traits && traits.length ? ` Along the way, ${traits.slice(0,2).join(' and ')} decisions steer moments that feel both intimate and large.` : '';
-    const full = `${opening} ${mid} ${conflict}${traitBeat} ${close}`;
-    return full;
-  }
-
-  // Local pseudo-AI generator for vocabulary for an episode. Produces 4-7 words/phrases
-  function aiGenerateVocab({ lang, episode = 1, genresList = [], avatarName = '' }) {
-    // seed using language + episode to make deterministically different packs per episode
-    let seed = (lang + '::' + episode + '::' + genresList.join('|') + '::' + avatarName).split('').reduce((s,c)=>s + c.charCodeAt(0), 0);
-    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
-    const common = {
-      Spanish: ['hola','gracias','por favor','amigo','mercado','calle','tram'],
-      French: ['bonjour','merci','s\'il vous plaît','ami','marché','rue','tramway'],
-      Japanese: ['こんにちは','ありがとう','お願いします','友達','市場','通り','電車']
-    };
-    const pool = common[lang] || common['Spanish'];
-    // pick 5 unique items, and create meanings simple English placeholders
-    const count = Math.max(4, Math.min(7, Math.round(4 + rnd() * 3)));
-    const chosen = [];
-    const used = new Set();
-    while (chosen.length < count) {
-      const c = pool[Math.floor(rnd() * pool.length)];
-      if (used.has(c)) continue;
-      used.add(c);
-      chosen.push({ word: c, meaning: `(${lang}) ${c}`, examples: [`Example: ${c}`] });
-    }
-    return chosen;
-  }
-
-  // Remote vocab generator wrapper (optional) - uses OpenAI if key present, otherwise fallback
-  async function remoteGenerateVocab({ lang, episode = 1, genresList = [], avatarName = '' }) {
+  // --- AI story generator using OpenAI API
+  async function aiGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [] }) {
     try {
       const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
-      if (!key) throw new Error('No OpenAI key');
-      const prompt = `Generate 5 short vocabulary entries (word and short English meaning) useful for an episode ${episode} in ${lang}. Output JSON array with objects {"word":"...","meaning":"...","examples":[...]}`;
+      if (!key) throw new Error('No OpenAI API key found. Please add VITE_OPENAI_KEY to your .env file.');
+      
+      const userName = avatarData.name || 'the traveler';
+      const userTraits = traits.length > 0 ? traits.join(', ') : 'adventurous';
+      const userHobbies = hobbies.length > 0 ? hobbies.join(', ') : 'exploring';
+      
+      const prompt = `Write a unique short story opening in English for a language-learning app. 
+
+MAIN CHARACTER: ${userName} (the user/protagonist)
+- Personality traits: ${userTraits}
+- Hobbies: ${userHobbies}
+
+SETTING: A ${lang}-speaking city or country
+GENRES: ${genresList.join(', ')}
+COMPANION: ${buddy} (a local friend/companion, NOT a teacher)
+
+Write 3-5 vivid sentences that introduce ${userName} arriving in this new place and meeting ${buddy}. Make ${userName} the clear protagonist of the story. Keep it engaging and original.
+
+IMPORTANT: This is a fun story, NOT a learning session. ${buddy} should be a friend, guide, or companion - NOT a teacher or language instructor. The story should be entertaining and natural, avoiding any explicit teaching or lesson-giving.`;
+      
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 300 })
       });
-      if (!res.ok) throw new Error('LLM call failed');
-      const data = await res.json();
-      const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || data.choices?.[0]?.text || '';
-      // try to parse JSON from response
-      const parsed = JSON.parse(txt);
-      return parsed.map(p => ({ word: p.word, meaning: p.meaning, examples: p.examples || [] }));
-    } catch (e) {
-      console.warn('Remote vocab failed, falling back to local', e);
-      return aiGenerateVocab({ lang, episode, genresList, avatarName });
-    }
-  }
-
-  // Optional remote LLM call (OpenAI) — only used if VITE_OPENAI_KEY is set at build/runtime.
-  async function remoteGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [] }) {
-    try {
-      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
-      if (!key) throw new Error('No OpenAI key');
-      const prompt = `Write a unique short story opening in English for a language-learning app. Language:${lang} Genres:${genresList.join(', ')} Avatar:${avatarData.name} Traits:${traits.join(', ')} Hobbies:${hobbies.join(', ')} Buddy:${buddy}. Keep it vivid and original, about 3-5 sentences.`;
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 300 })
-      });
-      if (!res.ok) throw new Error('LLM call failed');
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(`API call failed: ${res.status} - ${errorData.error?.message || 'Unknown error'}`);
+      }
+      
       const data = await res.json();
       const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || data.choices?.[0]?.text || '';
       return txt.trim();
     } catch (e) {
-      console.warn('Remote LLM failed, falling back to local generator', e);
-      return aiGenerateStory({ lang, genresList, avatarData, buddy, hobbies, traits });
+      console.error('AI story generation failed:', e);
+      throw new Error(`Story generation failed: ${e.message}`);
     }
   }
 
-  function aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [] }) {
-    // Produce ~100 dialogue entries with a beginning/middle/end arc.
-    const aName = avatarData.name || 'Traveler';
-    const bName = buddy || 'Buddy';
-    const locals = ['Vendor', 'Old Friend', 'Mysterious Caller', 'Passerby', 'Neighbour'];
-    const dialogues = [];
-    // seed for deterministic variation
-    let seed = (plot || '').split('').reduce((s,c)=>s + c.charCodeAt(0), 0) + (aName.length || 0) + Date.now() % 1000;
-    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  // AI vocab generator using OpenAI API
+  async function aiGenerateVocab({ lang, episode = 1, genresList = [], avatarName = '' }) {
+    try {
+      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
+      if (!key) throw new Error('No OpenAI key');
+      const prompt = `Generate 5 vocabulary entries for learning ${lang} in episode ${episode}. Return ONLY a valid JSON array with this exact format:
+[{"word":"example word in ${lang}","meaning":"English translation","examples":["Example sentence 1 in ${lang}","Example sentence 2 in ${lang}"]}]
 
-    const opening = [`${bName}: Have you seen the mural by the harbor?`, `${aName}: The city smells like rain and coffee this morning.`];
-    const middle = [`${locals[0]}: The market is louder than usual.`, `${bName}: I like the way the light hits the canal at noon.`, `${aName}: I keep misplacing my map.`, `${locals[1]}: Your face looks familiar, have we met?`, `${locals[2]}: Some questions stir trouble.`];
-    const conflict = [`${bName}: There's someone who remembers old names.`, `${locals[3]}: Best to mind your own business.`, `${aName}: I found a torn letter.`];
-    const resolution = [`${bName}: Let's check the ledger at the cafe.`, `${aName}: Okay, but quietly.`, `${locals[4]}: I can point you to the alley.`];
-
-    const usedSet = new Set();
-
-    // helper to push unique lines
-    const pushUnique = (speaker, text, choices=null) => {
-      const key = `${speaker}|${text}`;
-      if (usedSet.has(key)) return false;
-      usedSet.add(key);
-      dialogues.push({ speaker, text, choices });
-      return true;
-    };
-
-    // Build arc: opening (5-8 lines), middle (~70-85), conflict (~8-12), resolution (5-8)
-    const openCount = Math.max(3, Math.min(8, Math.round(4 + rnd() * 4)));
-    for (let i=0;i<openCount;i++) {
-      const t = opening[i % opening.length];
-      const speaker = i % 2 === 0 ? bName : aName;
-      pushUnique(speaker, t.replace(new RegExp(`^${speaker}:\s*`), ''));
-    }
-
-    const midCount = Math.max(60, Math.min(85, Math.round(60 + rnd() * 25)));
-    for (let i=0;i<midCount;i++) {
-      const t = middle[Math.floor(rnd() * middle.length)];
-      const sp = (i % 3 === 0) ? bName : (i % 3 === 1) ? aName : locals[i % locals.length];
-      let line = t.replace(new RegExp(`^${sp}:\s*`), '');
-      // occasionally insert a vocab word but ensure we don't insert partial matches
-      if (vp && vp.length && rnd() > 0.7) {
-        const v = vp[Math.floor(rnd() * vp.length)];
-        // append as a clear token
-        line = `${line.replace(/\.$/, '')} — ${v.word}.`;
+IMPORTANT:
+- "word" must be in ${lang} (the target language)
+- "meaning" must be in English
+- "examples" must be in ${lang} (showing how to use the word)
+- Include common, useful words appropriate for beginners
+- Make sure the response is valid JSON without any markdown formatting or explanations.`;
+      
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 500 })
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(`API call failed: ${res.status} - ${errorData.error?.message || 'Unknown error'}`);
       }
-      // sometimes add a small choice
-      let choices = null;
-      if (rnd() > 0.92) {
-        if (vp && vp.length && rnd() > 0.5) {
-          const v = vp[Math.floor(rnd() * vp.length)];
-          choices = [ { text: `Respond using "${v.word}"`, practiceWord: v.word, nextDelta: 1 }, { text: `Say: I need more time.`, nextDelta: 2 } ];
-        } else {
-          choices = [ { text: `Agree`, nextDelta: 1 }, { text: `Decline`, nextDelta: 1 } ];
+      
+      const data = await res.json();
+      const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || data.choices?.[0]?.text || '';
+      
+      // Remove markdown code blocks if present
+      const cleanedTxt = txt.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      
+      // try to parse JSON from response
+      const parsed = JSON.parse(cleanedTxt);
+      return parsed.map(p => ({ word: p.word, meaning: p.meaning, examples: p.examples || [] }));
+    } catch (e) {
+      console.error('AI vocab generation failed:', e);
+      throw new Error(`Vocab generation failed: ${e.message}`);
+    }
+  }
+
+  // AI dialogue generator using OpenAI API - generates 100 coherent dialogues that match the plot
+  async function aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [] }) {
+    try {
+      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
+      if (!key) throw new Error('No OpenAI API key found');
+      
+      const aName = avatarData.name || 'Traveler';
+      const bName = buddy || 'Buddy';
+      const vocabWords = vp && vp.length > 0 ? vp.map(v => `${v.word} (${v.meaning})`).join(', ') : 'N/A';
+      
+      const prompt = `Create exactly 100 dialogue lines for a language-learning story in English. 
+
+STORY PLOT:
+${plot}
+
+CHARACTERS:
+- ${aName} (the protagonist)
+- ${bName} (their local friend/companion, NOT a teacher)
+- Optional supporting characters: Vendor, Café Owner, Street Musician, etc.
+
+VOCABULARY TO INTEGRATE (use naturally in dialogue):
+${vocabWords}
+
+STRUCTURE (100 lines total):
+- Lines 1-15: Opening - Introduce setting and characters, establish initial situation
+- Lines 16-70: Development - Build the story, explore relationships, introduce conflicts
+- Lines 71-90: Climax - Tension peaks, main conflict comes to head
+- Lines 91-100: Resolution - Resolve conflict, emotional conclusion
+
+Return ONLY a valid JSON array with exactly 100 objects in this format:
+[{"speaker":"${aName}","text":"Dialogue text here"},{"speaker":"${bName}","text":"Response here"}]
+
+Requirements:
+- Each dialogue line should advance the plot
+- Characters should have distinct voices
+- Include natural conversation flow
+- Integrate vocabulary words organically (don't force them)
+- Build emotional connection between characters
+- Create a satisfying story arc
+- This is a FUN STORY, not a lesson - ${bName} should NEVER teach or explain language
+- Focus on adventure, relationships, and entertainment
+- NO markdown formatting, ONLY the JSON array`;
+
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ 
+          model: 'gpt-4o-mini', 
+          messages: [{ role: 'user', content: prompt }], 
+          max_tokens: 4000,
+          temperature: 0.8
+        })
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(`API call failed: ${res.status} - ${errorData.error?.message || 'Unknown error'}`);
+      }
+      
+      const data = await res.json();
+      const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+      
+      // Remove markdown code blocks if present
+      const cleanedTxt = txt.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      
+      // Parse JSON
+      const parsed = JSON.parse(cleanedTxt);
+      
+      // Ensure we have exactly 100 dialogues
+      if (parsed.length < 100) {
+        console.warn(`Only ${parsed.length} dialogues generated, padding to 100`);
+        while (parsed.length < 100) {
+          parsed.push({ 
+            speaker: parsed.length % 2 === 0 ? aName : bName, 
+            text: 'The story continues...' 
+          });
         }
       }
-      pushUnique(sp, line, choices);
+      
+      // Add occasional practice prompts (every ~15-20 lines)
+      const dialoguesWithChoices = parsed.slice(0, 100).map((dlg, idx) => {
+        // Add practice choices at strategic points
+        if (vp && vp.length > 0 && idx > 10 && idx < 90 && idx % 17 === 0) {
+          const v = vp[Math.floor(Math.random() * vp.length)];
+          return {
+            ...dlg,
+            choices: [
+              { text: `Practice saying "${v.word}"`, practiceWord: v.word, nextDelta: 1 },
+              { text: 'Continue listening', nextDelta: 1 }
+            ]
+          };
+        }
+        return dlg;
+      });
+      
+      return dialoguesWithChoices;
+      
+    } catch (e) {
+      console.error('AI dialogue generation failed:', e);
+      // Fallback to simple template-based dialogues
+      return generateFallbackDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
     }
+  }
 
-    const conflictCount = Math.max(6, Math.min(12, Math.round(6 + rnd() * 6)));
-    for (let i=0;i<conflictCount;i++) {
-      const t = conflict[i % conflict.length];
-      const sp = i % 2 === 0 ? locals[i % locals.length] : bName;
-      pushUnique(sp, t.replace(new RegExp(`^${sp}:\s*`), ''));
+  // Fallback dialogue generator (used if AI fails)
+  function generateFallbackDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [] }) {
+    const aName = avatarData.name || 'Traveler';
+    const bName = buddy || 'Buddy';
+    const dialogues = [];
+    
+    const templates = [
+      `Welcome to the city. It's good to meet you.`,
+      `I've been waiting for someone like you.`,
+      `There's something I need to show you.`,
+      `The market is just ahead.`,
+      `Do you speak ${lang}?`,
+      `Let me teach you some words.`,
+      `This neighborhood has many stories.`,
+      `We should explore together.`,
+      `I have a feeling this will be interesting.`,
+      `The locals are friendly here.`
+    ];
+    
+    for (let i = 0; i < 100; i++) {
+      const speaker = i % 2 === 0 ? aName : bName;
+      const text = templates[i % templates.length];
+      dialogues.push({ speaker, text });
     }
-
-    const resCount = Math.max(4, Math.min(8, Math.round(4 + rnd() * 4)));
-    for (let i=0;i<resCount;i++) {
-      const t = resolution[i % resolution.length];
-      const sp = i % 2 === 0 ? bName : aName;
-      pushUnique(sp, t.replace(new RegExp(`^${sp}:\s*`), ''));
-    }
-
-    // Ensure we have about 100 dialogues; trim or expand slightly
-    while (dialogues.length < 90) {
-      const sp = locals[Math.floor(rnd() * locals.length)];
-      const t = `A small detail hints at something larger.`;
-      pushUnique(sp, t);
-    }
-    if (dialogues.length > 110) dialogues.length = 110;
-
+    
     return dialogues;
   }
-  function acceptPlot() {
+  async function acceptPlot() {
     if (!language) return alert('No language selected.');
     console.log('acceptPlot clicked — language:', language, 'genres:', genres);
     console.log('User accepted plot for', language, 'genres', genres);
 
-    // mark language as started and save selected genres
-    setEpisodes(prev => {
-      const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: [] };
-      const updated = { ...langData, started: true, genres: genres.length ? genres : (langData.genres || []) };
-      return { ...prev, [language]: updated };
-    });
+    // Generate vocab and dialogues if not already generated
+    if (!episodes[language]?.generatedVocab || !episodes[language]?.generatedDialogues) {
+      try {
+        const vocab = await aiGenerateVocab({ lang: language, episode: 1, genresList: genres, avatarName: avatar.name });
+        
+        const dialogues = await aiGenerateDialogues({ 
+          plot: plotSummary, 
+          avatarData: avatar, 
+          buddy: buddyName, 
+          lang: language, 
+          vocabPack: vocab 
+        });
+        
+        setVocabPack(vocab);
+        setStoryDialogues(dialogues);
+        
+        // Persist to episodes
+        setEpisodes(prev => {
+          const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: [] };
+          const updated = { 
+            ...langData, 
+            started: true, 
+            genres: genres.length ? genres : (langData.genres || []),
+            generatedPlot: plotSummary,
+            generatedVocab: vocab,
+            generatedDialogues: dialogues
+          };
+          return { ...prev, [language]: updated };
+        });
+      } catch (e) {
+        console.error('Error generating content:', e);
+      }
+    } else {
+      // mark language as started and save selected genres
+      setEpisodes(prev => {
+        const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: [] };
+        const updated = { ...langData, started: true, genres: genres.length ? genres : (langData.genres || []) };
+        return { ...prev, [language]: updated };
+      });
+    }
 
     // We've now entered the main page for this language — clear justCompletedGenres to be safe
     setJustCompletedGenres(false);
@@ -489,18 +593,43 @@ export default function App() {
   }
 
   function handleGenerateNewStory() {
-    // Prefer remote LLM if available, otherwise local generator. Persist result into episodes[language].
+    // Use OpenAI API for story generation
     (async () => {
       try {
         if (!language) return alert('Select a language first');
         console.log('Generate new story clicked — language:', language, 'genres:', genres);
         setGeneratingStory(true);
-        const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits });
+        
+        // Ensure we have a buddy name
+        const buddy = buddyName || generateBuddyName(language);
+        if (!buddyName) setBuddyName(buddy);
+        
+        const story = await aiGenerateStory({ 
+          lang: language, 
+          genresList: genres, 
+          avatarData: avatar, 
+          buddy: buddy, 
+          hobbies: avatar.hobbies, 
+          traits: avatar.traits 
+        });
+        
         // generate a fresh vocab pack for this episode as well (so each generated plot proposal shows a lesson)
-        const vocab = await (import.meta.env.VITE_OPENAI_KEY ? remoteGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name }) : Promise.resolve(aiGenerateVocab({ lang: language, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name })));
+        const vocab = await aiGenerateVocab({ 
+          lang: language, 
+          episode: currentEpisode || 1, 
+          genresList: genres, 
+          avatarName: avatar.name 
+        });
+        
         // apply vocab to state so preview shows correct underlines
         setVocabPack(vocab);
-        const dialogues = aiGenerateDialogues({ plot: story, avatarData: avatar, buddy: buddyName, lang: language, vocabPack: vocab });
+        const dialogues = await aiGenerateDialogues({ 
+          plot: story, 
+          avatarData: avatar, 
+          buddy: buddy, 
+          lang: language, 
+          vocabPack: vocab 
+        });
         setPlotSummary(story);
         setStoryDialogues(dialogues);
         setDialogueIndex(0);
@@ -511,7 +640,7 @@ export default function App() {
         });
       } catch (e) {
         console.error('Failed generating new story', e);
-        alert('Failed to generate a new story. See console for details.');
+        alert(`Failed to generate a new story: ${e.message || 'Unknown error'}. Please check your API key.`);
       } finally {
         setGeneratingStory(false);
       }
@@ -519,13 +648,13 @@ export default function App() {
   }
 
   // ----- Episode flow -----
-  function startEpisode(epNum) {
+  async function startEpisode(epNum) {
     if (!language) return alert('Select a language first.');
     console.log('Starting episode', epNum, 'in', language);
     setCurrentEpisode(epNum);
     const buddy = generateBuddyName(language);
     setBuddyName(buddy);
-    prepareLesson(language);
+    await prepareLesson(language);
     setScreen('animation');
     if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
     animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 1500);
@@ -553,8 +682,13 @@ export default function App() {
     return name;
   }
 
-  function prepareLesson(lang) {
-    console.log('Preparing lesson for', lang);
+  async function prepareLesson(lang) {
+    console.log('Preparing lesson for', lang, 'episode', currentEpisode);
+    
+    // Generate new vocabulary for each episode using AI
+    const vocab = await aiGenerateVocab({ lang, episode: currentEpisode || 1, genresList: genres, avatarName: avatar.name });
+    
+    // Fallback bank if AI generation fails
     const BANK = {
       Spanish: [
         { word: 'hola', meaning: 'hello', examples: ['Hola, ¿cómo estás?', 'Hola, bienvenido.'] },
@@ -579,9 +713,9 @@ export default function App() {
       ]
     };
 
-    const pool = BANK[lang] || BANK['Spanish'];
+    const pool = vocab && vocab.length > 0 ? vocab : (BANK[lang] || BANK['Spanish']);
     const pack = pool.slice(0, 5);
-    setVocabPack(pack); setVocabPack(pack); setVocabPack(pack); // defensive repeats don't harm state
+    setVocabPack(pack);
 
     const q = pack.map((v, idx) => {
       const distractors = pool.filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
@@ -778,11 +912,32 @@ export default function App() {
   if (screen === 'plot') {
     return (
       <div style={styles.container}>
-        <h1 style={styles.title}>Plot summary</h1>
-        <p style={styles.summaryText}>{plotSummary}</p>
+        <h1 style={styles.title}>Your Story</h1>
+        <p style={styles.summaryText}>{plotSummary || 'Generating your unique story...'}</p>
         <div style={{ display: 'flex', gap: 12 }}>
-          <button type="button" onClick={acceptPlot} style={{ ...styles.continueButton, backgroundColor: '#4CAF50' }}>Continue to Story</button>
-          <button type="button" onClick={handleGenerateNewStory} disabled={generatingStory} style={{ padding: '12px 20px', borderRadius: 12, background: generatingStory ? '#DDD' : '#EEE', border: 'none' }}>{generatingStory ? 'Generating…' : 'Generate a New Story'}</button>
+          <button 
+            type="button" 
+            onClick={acceptPlot} 
+            style={{ ...styles.continueButton, backgroundColor: '#4CAF50', color: '#fff' }}
+          >
+            Continue to Story
+          </button>
+          <button 
+            type="button" 
+            onClick={handleGenerateNewStory} 
+            disabled={generatingStory} 
+            style={{ 
+              padding: '12px 20px', 
+              borderRadius: 12, 
+              background: generatingStory ? '#DDD' : '#2196F3', 
+              color: generatingStory ? '#666' : '#fff',
+              border: 'none',
+              cursor: generatingStory ? 'not-allowed' : 'pointer',
+              fontWeight: 600
+            }}
+          >
+            {generatingStory ? 'Generating…' : 'Generate a New Story'}
+          </button>
         </div>
       </div>
     );
@@ -847,13 +1002,30 @@ export default function App() {
     return (
       <div style={styles.container}>
         <button onClick={() => setScreen('home')} style={{ position: 'absolute', left: 20, top: 20, border: 'none', background: 'transparent', color: '#1E88E5' }}>← Back to Main Page</button>
-        <h2 style={styles.title}>Welcome to your lesson!</h2>
-        <p>Your learning buddy is <strong>{buddyName}</strong> — they will teach you up to 5 new words and grammar.</p>
+        <h2 style={styles.title}>Learn New Words</h2>
+        <p>Study these {language} words and phrases before the quiz.</p>
 
         <div style={{ marginTop: 12, width: '100%', maxWidth: 720 }}>
           {vocabPack.map((v, i) => (
             <div key={v.word} style={{ padding: 12, borderRadius: 12, background: '#fff', marginBottom: 10, boxShadow: '0 2px 6px rgba(0,0,0,0.06)' }}>
-              <div style={{ fontWeight: 700 }}>{v.word} — <span style={{ fontWeight: 400, color: '#666' }}>{v.meaning}</span></div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ fontWeight: 700, fontSize: 18 }}>{v.word}</span>
+                <button 
+                  onClick={() => tts.speak(v.word)} 
+                  style={{ 
+                    padding: '4px 10px', 
+                    borderRadius: 8, 
+                    border: 'none', 
+                    background: '#E0F2FE', 
+                    cursor: 'pointer',
+                    fontSize: 16
+                  }}
+                  title="Hear pronunciation"
+                >
+                  🔊
+                </button>
+                <span style={{ fontWeight: 400, color: '#666', fontSize: 16 }}>— {v.meaning}</span>
+              </div>
               <ul style={{ marginTop: 8, marginLeft: 18 }}>{v.examples.map((ex,j) => <li key={j}>{ex}</li>)}</ul>
             </div>
           ))}
@@ -920,10 +1092,10 @@ export default function App() {
                   setShowConfetti(true);
                   tts.speak('Congratulations!');
                   setTimeout(() => setShowConfetti(false), 3000);
-                    // Generate dialogues for the story (prefer remote) and move into the dialogue flow rather than a static story page
+                    // Generate dialogues for the story using AI
                     (async () => {
-                      const storyText = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits });
-                      const dialogues = aiGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack });
+                      const storyText = await aiGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits });
+                      const dialogues = await aiGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack });
                       setPlotSummary(storyText);
                       setStoryDialogues(dialogues);
                       setDialogueIndex(0);
@@ -947,25 +1119,38 @@ export default function App() {
   if (screen === 'story') {
     return (
       <div style={styles.container}>
-        <button onClick={() => setScreen('home')} style={{ position: 'absolute', left: 20, top: 20, border: 'none', background: 'transparent', color: '#1E88E5' }}>← Back to Main Page</button>
+        <button onClick={() => setScreen('home')} style={{ position: 'absolute', left: 20, top: 20, border: 'none', background: 'transparent', color: '#1E88E5', cursor: 'pointer', padding: '8px 12px', borderRadius: 8 }}>← Main Page</button>
         {lastDialogueMode ? (
-          <div style={{ marginTop: 12, padding: 16, borderRadius: 12, background: '#F8FAFC', maxWidth: 720 }}>
+          <div style={{ marginTop: 60, padding: 24, borderRadius: 12, background: '#F8FAFC', maxWidth: 720, textAlign: 'center' }}>
             {storyDialogues.length ? (
               <>
-                <div style={{ fontSize: 18, fontWeight: 700 }}>{storyDialogues[storyDialogues.length - 1].speaker}</div>
-                <div style={{ marginTop: 8, fontSize: 18 }}>{highlightVocab(storyDialogues[storyDialogues.length - 1].text)}</div>
-                <div style={{ marginTop: 12, color: '#64748B' }}>Quiet, tense— the city holds its breath.</div>
+                <div style={{ fontSize: 12, color: '#94A3B8', marginBottom: 16, fontWeight: 500 }}>Episode {currentEpisode || 1}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>{storyDialogues[storyDialogues.length - 1].speaker}</div>
+                <div style={{ fontSize: 18, lineHeight: 1.6 }}>{highlightVocab(storyDialogues[storyDialogues.length - 1].text)}</div>
               </>
             ) : null}
-            <div style={{ marginTop: 12 }}><button onClick={() => { finishEpisode(currentEpisode); setLastDialogueMode(false); }} style={{ padding: '10px 14px', borderRadius: 10, border: 'none', background: '#10B981', color: '#fff' }}>Finish Episode</button></div>
+            <div style={{ marginTop: 24 }}>
+              <button 
+                onClick={() => { finishEpisode(currentEpisode); setLastDialogueMode(false); }} 
+                style={{ padding: '12px 24px', borderRadius: 10, border: 'none', background: '#10B981', color: '#fff', fontWeight: 600, cursor: 'pointer' }}
+              >
+                Finish Episode
+              </button>
+            </div>
           </div>
         ) : (
           <>
             <h2 style={styles.title}>Episode {currentEpisode} — Story</h2>
             <div style={{ marginTop: 12, padding: 16, borderRadius: 12, background: '#F8FAFC', maxWidth: 720 }}>{renderStoryScene()}</div>
             <div style={{ marginTop: 16 }}>
-              <p><strong>Cliffhanger:</strong> The episode ends with an unexpected call — someone knows more about your past.</p>
-              <div style={{ marginTop: 12 }}><button onClick={() => finishEpisode(currentEpisode)} style={{ padding: '10px 14px', borderRadius: 10, border: 'none', background: '#10B981', color: '#fff' }}>Finish Episode</button></div>
+              <div style={{ marginTop: 12 }}>
+                <button 
+                  onClick={() => finishEpisode(currentEpisode)} 
+                  style={{ padding: '10px 14px', borderRadius: 10, border: 'none', background: '#10B981', color: '#fff', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Finish Episode
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -976,9 +1161,12 @@ export default function App() {
 
   if (screen === 'dialogue') {
     const dlg = storyDialogues[dialogueIndex] || null;
+    const isLastDialogue = dialogueIndex >= storyDialogues.length - 1;
+    
     return (
       <div style={{ ...styles.container, justifyContent: 'center' }} onClick={() => {
-        // Advance dialogue on background click (not on controls)
+        // Advance dialogue on background click (not on controls) and not when in practice mode
+        if (practiceState) return;
         if (dialogueIndex < storyDialogues.length - 1) {
           setDialogueIndex(i => i + 1);
         } else {
@@ -994,8 +1182,8 @@ export default function App() {
         <div style={{ maxWidth: 800, width: '100%', padding: 24 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <button onClick={() => setScreen('home')} style={{ position: 'relative', left: 0, border: 'none', background: 'transparent', color: '#1E88E5' }}>← Back to Main Page</button>
-              <div style={{ fontSize: 14, color: '#334155' }}>Episode {currentEpisode || 1}</div>
+              <button onClick={(e) => { e.stopPropagation(); setScreen('home'); }} style={{ position: 'relative', left: 0, border: 'none', background: 'transparent', color: '#1E88E5', cursor: 'pointer', padding: '8px 12px', borderRadius: 8 }}>← Main Page</button>
+              <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 500 }}>Episode {currentEpisode || 1}</div>
             </div>
             <div style={{ fontSize: 14, color: '#64748B' }}>{dialogueIndex + 1}/{Math.max(1, storyDialogues.length)}</div>
           </div>
@@ -1040,10 +1228,11 @@ export default function App() {
               {/* Practice UI */}
               {practiceState && (
                 <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEFCE8' }} onClick={(e) => e.stopPropagation()}>
-                  <div style={{ marginBottom: 8 }}>Practice: choose the correct translation for <strong>{practiceState.targetWord}</strong></div>
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ marginBottom: 8, fontWeight: 600 }}>Choose the correct English translation for: <strong style={{ color: '#0b5fff' }}>{practiceState.targetWord}</strong></div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {practiceState.options.map((opt, oi) => (
-                      <button key={oi} onClick={() => {
+                      <button key={oi} onClick={(e) => {
+                        e.stopPropagation();
                         const correct = oi === practiceState.correctIndex;
                         if (correct) {
                           tts.speak('Correct');
@@ -1054,7 +1243,7 @@ export default function App() {
                         } else {
                           tts.speak('Try again');
                         }
-                      }} style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#FFF' }}>{opt}</button>
+                      }} style={{ padding: '10px 14px', borderRadius: 8, border: '2px solid #ddd', background: '#FFF', cursor: 'pointer', textAlign: 'left', fontWeight: 500 }}>{opt}</button>
                     ))}
                   </div>
                 </div>
@@ -1063,7 +1252,7 @@ export default function App() {
           ) : (
             <div style={{ textAlign: 'center', color: '#94A3B8' }}>No dialogues available.</div>
           )}
-          <div style={{ marginTop: 18, color: '#94A3B8', fontSize: 14 }}>Click anywhere to continue</div>
+          {!isLastDialogue && <div style={{ marginTop: 18, textAlign: 'center', color: '#94A3B8', fontSize: 14 }}>Click anywhere to continue</div>}
         </div>
       </div>
     );
