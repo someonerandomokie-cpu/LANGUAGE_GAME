@@ -102,6 +102,7 @@ export default function App() {
   const [plotGenerating, setPlotGenerating] = useState(false);
   const [plotTimer, setPlotTimer] = useState(0);
   const [plotState, setPlotState] = useState({ tone: 'neutral', decisions: [] });
+  const [preloadedDialogues, setPreloadedDialogues] = useState(null); // Store dialogues generated during quiz
 
   const tts = useSpeech();
   const animationTimerRef = useRef(null);
@@ -115,13 +116,13 @@ export default function App() {
     };
   }, []);
 
-  // Auto-play TTS for dialogue lines when index changes
-  useEffect(() => {
-    const dlg = storyDialogues[dialogueIndex];
-    if (dlg && tts && typeof tts.speak === 'function' && !practiceState) {
-      try { tts.speak(`${dlg.speaker}: ${dlg.text}`); } catch (e) { console.warn('TTS failed for dialogue', e); }
-    }
-  }, [dialogueIndex, storyDialogues]);
+  // Auto-play TTS for dialogue lines when index changes - REMOVED per user request
+  // useEffect(() => {
+  //   const dlg = storyDialogues[dialogueIndex];
+  //   if (dlg && tts && typeof tts.speak === 'function' && !practiceState) {
+  //     try { tts.speak(`${dlg.speaker}: ${dlg.text}`); } catch (e) { console.warn('TTS failed for dialogue', e); }
+  //   }
+  // }, [dialogueIndex, storyDialogues]);
 
   // Hide translate popup after 5 seconds automatically
   useEffect(() => {
@@ -129,6 +130,52 @@ export default function App() {
     const id = setTimeout(() => setTranslatePopup({ visible: false, text: '' }), 5000);
     return () => clearTimeout(id);
   }, [translatePopup.visible]);
+
+  // Preload dialogues when quiz starts (background generation)
+  useEffect(() => {
+    if (screen !== 'quiz' || preloadedDialogues !== null) return;
+    
+    // Start generating dialogues in the background
+    (async () => {
+      try {
+        const prevPlot = episodes[language]?.generatedPlot || '';
+        const prevPlotState = episodes[language]?.plotState || plotState;
+        const epNum = currentEpisode || 1;
+        
+        // Generate story text
+        const storyText = await remoteGenerateStory({ 
+          lang: language, 
+          genresList: genres, 
+          avatarData: avatar, 
+          buddy: buddyName, 
+          hobbies: avatar.hobbies, 
+          traits: avatar.traits, 
+          episodeNum: epNum, 
+          previousPlot: prevPlot, 
+          plotState: prevPlotState 
+        });
+        
+        // Generate dialogues
+        const dialogues = await remoteGenerateDialogues({ 
+          plot: storyText, 
+          avatarData: avatar, 
+          buddy: buddyName, 
+          lang: language, 
+          vocabPack, 
+          plotState: prevPlotState 
+        });
+        
+        const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
+        
+        // Store preloaded content
+        setPreloadedDialogues({ storyText, dialogues: padded });
+        
+        console.log('Background dialogue generation complete');
+      } catch (e) {
+        console.error('Background generation failed:', e);
+      }
+    })();
+  }, [screen, language, preloadedDialogues]);
 
   function normalizeSpeakerName(name) {
     return (name || '').trim().toLowerCase();
@@ -141,33 +188,48 @@ export default function App() {
   }
 
   function createFallbackChoices(idx, vocabPack) {
-    // Create meaningful choices only at strategic moments, incorporating vocabulary when available
-    // Return null if no choices should be shown (most of the time)
+    // Create meaningful choices at key moments (every ~5 lines)
+    // Return null if no choices should be shown
     
-    // Only show choices every ~12-15 lines, and only if we have vocab to practice
-    const shouldShowChoice = idx > 0 && idx % 13 === 0 && vocabPack && vocabPack.length > 0;
+    // Show choices every 5 lines, and only if we have vocab to practice
+    const shouldShowChoice = idx > 0 && idx % 5 === 0 && vocabPack && vocabPack.length > 0;
     if (!shouldShowChoice) return null;
     
-    // Pick a random vocab word to practice
-    const vocabIndex = Math.floor(idx / 13) % vocabPack.length;
+    // Pick vocab words to practice - use multiple words for variety
+    const vocabIndex = Math.floor(idx / 5) % vocabPack.length;
     const vocab = vocabPack[vocabIndex];
+    const vocab2 = vocabPack[(vocabIndex + 1) % vocabPack.length];
     
     if (!vocab) return null;
     
-    // Create choices that use the vocabulary word in context
-    return [
+    // Create 3+ choices with actual dialogue responses using vocabulary
+    const choices = [
       { 
-        text: `Say: "${vocab.word}"`, 
+        text: `"${vocab.word}" (${vocab.meaning})`, 
         practiceWord: vocab.word, 
-        effect: { tone: 'learning' },
-        nextDelta: 1 
-      },
-      { 
-        text: 'Respond in English', 
-        effect: { tone: 'comfortable' },
+        effect: { tone: 'engaged' },
         nextDelta: 1 
       }
     ];
+    
+    // Add a second vocab option if available
+    if (vocab2 && vocab2.word !== vocab.word) {
+      choices.push({
+        text: `"${vocab2.word}" (${vocab2.meaning})`,
+        practiceWord: vocab2.word,
+        effect: { tone: 'learning' },
+        nextDelta: 1
+      });
+    }
+    
+    // Add an English fallback option
+    choices.push({ 
+      text: 'Respond in English', 
+      effect: { tone: 'comfortable' },
+      nextDelta: 1 
+    });
+    
+    return choices;
   }
 
   function applyChoiceEffect(effect) {
@@ -452,25 +514,29 @@ Requirements:
 - Focus on adventure and interaction - NO teaching or explaining words
 - Include moments of discovery, tension, and connection
 - The final line should be poignant and set up the next episode
-- IMPORTANT: Only include player choices at key decision moments (approximately every 12-15 lines)
-- When choices appear, they should offer vocabulary-based responses where the player chooses which word to use
+- IMPORTANT: Include player choices approximately every 5 dialogue lines at key decision moments
+- When choices appear, offer 2-3 specific responses using vocabulary words from the lesson
+- Each choice should represent what the character actually says (not just tone), allowing the player to practice vocabulary in context
 
 Format each line as:
 [Character Name]: [Their dialogue]
 
-For choice moments, add after the dialogue line:
+For choice moments (every ~5 lines), add after the dialogue line:
 CHOICES:
-- Option using word: [vocab word from the lesson]
-- Alternative response in English
+- "${vp[0]?.word || 'hello'}" (meaning: ${vp[0]?.meaning || 'greeting'})
+- "${vp[1]?.word || 'goodbye'}" (meaning: ${vp[1]?.meaning || 'farewell'})
+- Respond in English
 
 Example:
 ${buddy}: ${avatarData.name}, look at this old map I found.
 ${avatarData.name}: It shows a place I've never seen before.
 Local Vendor: That place? Many stories about it.
 ${avatarData.name}: What kind of stories?
+Local Vendor: Dark ones. Best to stay away.
 CHOICES:
-- Say: "${vp[0]?.word || 'hello'}" (meaning: ${vp[0]?.meaning || 'greeting'})
-- Ask in English: "Can you tell me more?"`;
+- "${vp[0]?.word || 'por favor'}" (please tell me more)
+- "${vp[1]?.word || 'gracias'}" (thank you, I understand)
+- Ask in English: "Why should we stay away?"`;
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -701,23 +767,37 @@ CHOICES:
       else if (speakerIndex === 1) speaker = aName;
       else speaker = locals[(speakerIndex - 2) % locals.length];
       
-      // Add strategic vocabulary choices every 12-15 lines at key moments
-      const shouldAddChoice = vp.length > 0 && i > 0 && i % 13 === 0 && i < 80;
-      const vocabForChoice = shouldAddChoice ? vp[Math.floor(i / 13) % vp.length] : null;
+      // Add strategic vocabulary choices every 5 lines at key moments
+      const shouldAddChoice = vp.length > 0 && i > 0 && i % 5 === 0 && i < 90;
       
       let choices = null;
-      if (vocabForChoice) {
+      if (shouldAddChoice) {
+        const vocabIndex = Math.floor(i / 5) % vp.length;
+        const vocab1 = vp[vocabIndex];
+        const vocab2 = vp[(vocabIndex + 1) % vp.length];
+        
         choices = [
           { 
-            text: `Say: "${vocabForChoice.word}" (${vocabForChoice.meaning})`, 
-            practiceWord: vocabForChoice.word, 
-            nextDelta: 1 
-          },
-          { 
-            text: 'Respond in English', 
+            text: `"${vocab1.word}" (${vocab1.meaning})`, 
+            practiceWord: vocab1.word, 
             nextDelta: 1 
           }
         ];
+        
+        // Add second vocab option if different
+        if (vocab2 && vocab2.word !== vocab1.word) {
+          choices.push({
+            text: `"${vocab2.word}" (${vocab2.meaning})`,
+            practiceWord: vocab2.word,
+            nextDelta: 1
+          });
+        }
+        
+        // Add English option
+        choices.push({ 
+          text: 'Respond in English', 
+          nextDelta: 1 
+        });
       }
       
       dialogues.push({
@@ -1322,24 +1402,56 @@ CHOICES:
                   setShowConfetti(true);
                   tts.speak('Congratulations!');
                   setTimeout(() => setShowConfetti(false), 3000);
-                    // Generate dialogues for the story (prefer remote) and move into the dialogue flow rather than a static story page
-                    (async () => {
+                  
+                  // Use preloaded dialogues if available, otherwise generate on demand
+                  (async () => {
+                    let storyText, padded;
+                    
+                    if (preloadedDialogues) {
+                      // Use preloaded content - instant transition
+                      storyText = preloadedDialogues.storyText;
+                      padded = preloadedDialogues.dialogues;
+                      console.log('Using preloaded dialogues');
+                    } else {
+                      // Fallback: generate now if preload didn't complete
+                      console.log('Preload not ready, generating now');
                       const prevPlot = episodes[language]?.generatedPlot || '';
                       const prevPlotState = episodes[language]?.plotState || plotState;
                       const epNum = currentEpisode || 1;
-                      const storyText = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
-                      const dialogues = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
-                      const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
-                      setPlotSummary(storyText);
-                      setStoryDialogues(padded);
-                      setDialogueIndex(0);
-                      // persist generated plot+dialogues
-                      setEpisodes(prev => {
-                        const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
-                        return { ...prev, [language]: { ...langData, generatedPlot: storyText, generatedDialogues: padded } };
+                      storyText = await remoteGenerateStory({ 
+                        lang: language, 
+                        genresList: genres, 
+                        avatarData: avatar, 
+                        buddy: buddyName, 
+                        hobbies: avatar.hobbies, 
+                        traits: avatar.traits, 
+                        episodeNum: epNum, 
+                        previousPlot: prevPlot, 
+                        plotState: prevPlotState 
                       });
-                      setScreen('dialogue');
-                    })();
+                      const dialogues = await remoteGenerateDialogues({ 
+                        plot: storyText, 
+                        avatarData: avatar, 
+                        buddy: buddyName, 
+                        lang: language, 
+                        vocabPack, 
+                        plotState: prevPlotState 
+                      });
+                      padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
+                    }
+                    
+                    setPlotSummary(storyText);
+                    setStoryDialogues(padded);
+                    setDialogueIndex(0);
+                    setPreloadedDialogues(null); // Clear preloaded content
+                    
+                    // Persist generated plot+dialogues
+                    setEpisodes(prev => {
+                      const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
+                      return { ...prev, [language]: { ...langData, generatedPlot: storyText, generatedDialogues: padded } };
+                    });
+                    setScreen('dialogue');
+                  })();
                 }} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Continue →</button>
               </div>
             )}
