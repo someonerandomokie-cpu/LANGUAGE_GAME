@@ -181,19 +181,6 @@ export default function App() {
     return (name || '').trim().toLowerCase();
   }
 
-  function mapSpeakerName(name, userName, buddyName) {
-    const n = normalizeSpeakerName(name);
-    const user = normalizeSpeakerName(userName);
-    const buddy = normalizeSpeakerName(buddyName);
-    // Map common aliases to the correct canonical names
-    if (n === 'you' || n === 'player' || n === 'protagonist') return userName || 'You';
-    if (n === 'buddy' || n === 'friend' || n === 'best friend' || n === 'companion') return buddyName || 'Buddy';
-    // If name already matches the canonical ones (case-insensitive), return the exact canonical casing
-    if (n === user) return userName || name;
-    if (n === buddy) return buddyName || name;
-    return name;
-  }
-
   function isUserSpeaker(dlg) {
     const n = normalizeSpeakerName(dlg?.speaker);
     const user = normalizeSpeakerName(avatar?.name || '');
@@ -215,20 +202,19 @@ export default function App() {
 
     if (!vocab) return null;
 
-    // Create choices with vocabulary only (no English in parentheses, no English response option)
+    // Create 2-3 choices with target-language responses only (no English, no translations)
     const choices = [
       {
-        text: `"${vocab.word}"`,
+        text: `${vocab.word}`,
         practiceWord: vocab.word,
         effect: { tone: 'engaged' },
         nextDelta: 1
       }
     ];
 
-    // Add a second vocab option if available
     if (vocab2 && vocab2.word !== vocab.word) {
       choices.push({
-        text: `"${vocab2.word}"`,
+        text: `${vocab2.word}`,
         practiceWord: vocab2.word,
         effect: { tone: 'learning' },
         nextDelta: 1
@@ -430,32 +416,21 @@ export default function App() {
   // --- Embedded AI (local) generator: creates a unique story rather than just summarizing inputs.
   function aiGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [], plotState: ps = { tone: 'neutral', decisions: [] } }) {
     // Simple deterministic-ish pseudo-AI writer using templates and seeded randomness
-    let seed = (genresList.join('|') + '::' + (hobbies || []).join('|') + '::' + (avatarData.name || '')).split('').reduce((s,c)=>s+ c.charCodeAt(0), 0);
-    const rand = (n=1) => { seed = (seed * 9301 + 49297) % 233280; return Math.abs(seed / 233280) * n; };
-
-    // Map selected genres to specific beats to ensure genre alignment
-    const lowerGenres = (genresList || []).map(g => (g || '').toLowerCase());
-    const has = g => lowerGenres.includes(g);
-    const beats = [];
-    if (has('mystery')) beats.push('an encoded note tucked behind a broken tile, and a clue only locals whisper about');
-    if (has('adventure')) beats.push('a scramble over rooftops and a chase through a lantern-lit market');
-    if (has('romance')) beats.push('a spark between glances, a shared umbrella, and a choice that feels like a promise');
-    if (has('comedy')) beats.push('a luggage mix-up, a talkative parrot, and a misunderstanding that turns into laughter');
-    if (has('drama')) beats.push('old family tensions resurfacing at the worst moment');
-    if (has('sci-fi')) beats.push('a glitching device that records memories and a stranger who knows tomorrow');
-    if (beats.length === 0) beats.push('small discoveries that grow into something larger');
-
+  let seed = (genresList.join('|') + '::' + (hobbies || []).join('|') + '::' + (avatarData.name || '')).split('').reduce((s,c)=>s+ c.charCodeAt(0), 0);
+  const rand = (n=1) => { seed = (seed * 9301 + 49297) % 233280; return Math.abs(seed / 233280) * n; };
     // Use stronger, handcrafted prose mixing in user choices
-    const tone = (ps && ps.tone) || 'neutral';
-    const toneAdj = tone === 'friendly' ? 'warm' : tone === 'bold' ? 'electric' : 'steady';
-    const opening = `On a ${toneAdj} ${lang}-speaking morning, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and a clue that shouldn’t exist.`;
-    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they follow threads: ${beats.slice(0,2).join('; ')}.`;
-    const conflict = `But the city doesn’t give up answers easily. Each turn forces choices—who to trust, what to risk, and whether to listen to the pull of the heart or the call of the unknown.`;
-    const close = `By nightfall, a door opens onto the next chapter—just beyond reach, daring them to step through.`;
-    const traitBeat = traits && traits.length ? ` Along the way, ${traits.slice(0,2).join(' and ')} decisions color every encounter.` : '';
-    const recent = (ps && Array.isArray(ps.decisions) ? ps.decisions.slice(-3) : []).map(d => (d?.effect?.tone ? d.effect.tone : 'choice')).join(', ');
+  const tone = (ps && ps.tone) || 'neutral';
+  const toneAdj = tone === 'friendly' ? 'warm' : tone === 'bold' ? 'electric' : 'steady';
+  const opening = `On a ${toneAdj} morning in a ${lang}-speaking port, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and an old ticket to a life that might be waiting.`;
+    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a secret gallery, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
+    const conflict = `The city doesn't give up answers easily. Small betrayals, a mysterious figure who remembers your family name, and a spilled map at a midnight mercado force choices that test honesty, courage and the language you're learning.`;
+    const close = `By the time spring arrives, what started as a lesson in words becomes a lesson in belonging.`;
+    // Combine and add unique beats using traits to color characters
+    const traitBeat = traits && traits.length ? ` Along the way, ${traits.slice(0,2).join(' and ')} decisions steer moments that feel both intimate and large.` : '';
+    const recent = (ps && Array.isArray(ps.decisions) ? ps.decisions.slice(-3) : []).map((d,i) => (d?.effect?.tone ? d.effect.tone : 'choice')).join(', ');
     const choiceBeat = recent ? ` Recent choices leaned ${recent}.` : '';
-    return `${opening} ${mid} ${conflict}${traitBeat}${choiceBeat} ${close}`;
+    const full = `${opening} ${mid} ${conflict}${traitBeat}${choiceBeat} ${close}`;
+    return full;
   }
 
   // Optional remote LLM call (OpenAI) — only used if VITE_OPENAI_KEY is set at build/runtime.
@@ -467,11 +442,11 @@ export default function App() {
   const contextNote = previousPlot ? `\n\nPrevious plot: ${previousPlot}\n\nContinue the story naturally from where it left off, maintaining continuity.` : '';
   const toneHint = ps && ps.tone ? `\n\nTone preference from player choices so far: ${ps.tone}.` : '';
   const decisionsHint = ps && Array.isArray(ps.decisions) && ps.decisions.length ? `\n\nRecent player decisions: ${ps.decisions.slice(-5).map((d,i)=> d?.effect?.tone || 'choice').join(', ')}.` : '';
-  const prompt = `Write a SHORT, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}.
+  const prompt = `Write a NEW, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}. It must be fresh and reflect the selected genres strongly.
 
 Main Character: ${avatarData.name || 'The Traveler'}
 Setting: ${lang}-speaking location
-Genres: ${genresList.join(', ') || 'slice-of-life'}
+Genres: ${genresList.join(', ') || 'slice-of-life'} (make these genres clearly influence the events and mood)
 Personality Traits: ${traits.join(', ') || 'curious'}
 Hobbies: ${hobbies.join(', ') || 'exploring'}
 Local Friend: ${buddy}${contextNote}${toneHint}${decisionsHint}
@@ -483,8 +458,7 @@ Requirements:
 - Make it emotional and immersive
 - NO mentions of teaching, lessons, or language learning
 - End with suspense
-- MUST be 1 paragraph, 3-4 sentences total
-- STRICT: The plot must clearly fit the selected genres: ${genresList.join(', ') || 'slice-of-life'}. Use genre-specific elements (e.g., clues and revelations for Mystery, fast-paced pursuits for Adventure, attraction and choices for Romance, wit and situational humor for Comedy, high-stakes interpersonal conflict for Drama, speculative technology or anomalies for Sci-Fi). Avoid out-of-genre elements.`;
+- MUST be 1 paragraph, 3-4 sentences total`;
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -533,10 +507,9 @@ Requirements:
 - Include moments of discovery, tension, and connection
 - The final line should be poignant and set up the next episode
 - IMPORTANT: Include player choices approximately every 5 dialogue lines at key decision moments
-- When choices appear, offer 2-3 specific responses using vocabulary words from the lesson
-- Choices must be written ONLY in the target language (no English in parentheses, no English translation in the choice text)
-- Do NOT include an English response option; all choices are in the target language
-- Speaker names must be consistent: use exactly "${avatarData.name}" for the protagonist, exactly "${buddy}" for their friend. Do NOT use "You", "Player", or "Protagonist" as speakers. Do NOT swap names.
+- When choices appear, offer 2-3 specific responses using vocabulary words from the lesson (target-language only; do NOT include English or translations)
+- Each choice should represent what the character actually says (not just tone), allowing the player to practice vocabulary in context
+- Use EXACT speaker names only from this set: ${avatarData.name}, ${buddy}, and role-based locals like "Vendor", "Elder", "Guide". Do not invent variations like "You", "Protagonist", or "Friend" — use the exact names provided for the main two.
 
 Format each line as:
 [Character Name]: [Their dialogue]
@@ -570,13 +543,24 @@ CHOICES:
       const data = await res.json();
       const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
       
-  // Parse the response into dialogue objects
-  const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
+      // Parse the response into dialogue objects
+      const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
       const dialogues = [];
       let currentDialogue = null;
       let collectingChoices = false;
       let choicesList = [];
       
+      // Helper to normalize speakers to the exact avatar/buddy names
+      const normalizeSpeakerLabel = (name, aName, bName) => {
+        if (!name) return name;
+        const n = name.trim().toLowerCase();
+        const userAliases = new Set([aName.toLowerCase(), 'you', 'player', 'protagonist']);
+        const buddyAliases = new Set([bName.toLowerCase(), 'buddy', 'friend', 'best friend']);
+        if (userAliases.has(n)) return aName;
+        if (buddyAliases.has(n)) return bName;
+        return name; // keep locals/others as-is
+      };
+
       lines.forEach((line, i) => {
         // Check if this is a CHOICES: marker
         if (line.toUpperCase().includes('CHOICES:')) {
@@ -587,26 +571,16 @@ CHOICES:
         
         // If collecting choices and line starts with - or bullet
         if (collectingChoices && (line.startsWith('-') || line.startsWith('•') || line.startsWith('*'))) {
-          const choiceText = line.replace(/^[−\-•*]\s*/, '').trim();
-
-          // Extract a quoted word like "hola" or fallback to the line without any parentheses content
-          const quoted = choiceText.match(/["“”']([^"“”']+)["“”']/);
-          if (quoted) {
-            const word = quoted[1].trim();
-            choicesList.push({
-              text: `"${word}"`,
-              practiceWord: word,
-              nextDelta: 1
-            });
-          } else {
-            // Remove any trailing English in parentheses, keep only target-language token
-            const noParen = choiceText.replace(/\s*\([^)]*\)\s*$/, '').trim();
-            choicesList.push({
-              text: noParen,
-              practiceWord: noParen.replace(/\s+.*/, ''),
-              nextDelta: 1
-            });
-          }
+          const raw = line.replace(/^[-•*]\s*/, '').trim();
+          // Expect vocabulary-only options, possibly quoted. Strip quotes/parentheses.
+          const cleaned = raw.replace(/^"|^'|"$|'$/g, '').replace(/\s*\([^)]*\)\s*$/g, '').trim();
+          // Match against vocab pack to set practiceWord if present
+          const matchItem = vp.find(v => (v.word || '').toLowerCase() === cleaned.toLowerCase());
+          choicesList.push({
+            text: cleaned,
+            practiceWord: matchItem ? matchItem.word : undefined,
+            nextDelta: 1
+          });
           return;
         }
         
@@ -628,11 +602,9 @@ CHOICES:
           dialogues.push(currentDialogue);
         }
         
-  const speakerRaw = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
-  const text = line.slice(colonIdx + 1).trim();
-
-  // Map common aliases to the correct speaker names to prevent mix-ups
-  const speaker = mapSpeakerName(speakerRaw, avatarData.name, buddy);
+  let speaker = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
+  speaker = normalizeSpeakerLabel(speaker, avatarData.name, buddy);
+        const text = line.slice(colonIdx + 1).trim();
         
         currentDialogue = {
           speaker,
@@ -790,31 +762,32 @@ CHOICES:
       else if (speakerIndex === 1) speaker = aName;
       else speaker = locals[(speakerIndex - 2) % locals.length];
       
-      // Add strategic vocabulary choices every 5 lines at key moments
-      const shouldAddChoice = vp.length > 0 && i > 0 && i % 5 === 0 && i < 90;
+  // Add strategic vocabulary choices every 5 lines at key moments
+  const shouldAddChoice = vp.length > 0 && i > 0 && i % 5 === 0 && i < 90;
       
       let choices = null;
       if (shouldAddChoice) {
         const vocabIndex = Math.floor(i / 5) % vp.length;
         const vocab1 = vp[vocabIndex];
         const vocab2 = vp[(vocabIndex + 1) % vp.length];
-
+        
         choices = [
-          {
-            text: `"${vocab1.word}"`,
-            practiceWord: vocab1.word,
-            nextDelta: 1
+          { 
+            text: `${vocab1.word}`, 
+            practiceWord: vocab1.word, 
+            nextDelta: 1 
           }
         ];
-
+        
         // Add second vocab option if different
         if (vocab2 && vocab2.word !== vocab1.word) {
           choices.push({
-            text: `"${vocab2.word}"`,
+            text: `${vocab2.word}`,
             practiceWord: vocab2.word,
             nextDelta: 1
           });
         }
+
       }
       
       dialogues.push({
