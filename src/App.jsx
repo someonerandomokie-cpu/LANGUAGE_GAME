@@ -181,6 +181,19 @@ export default function App() {
     return (name || '').trim().toLowerCase();
   }
 
+  function mapSpeakerName(name, userName, buddyName) {
+    const n = normalizeSpeakerName(name);
+    const user = normalizeSpeakerName(userName);
+    const buddy = normalizeSpeakerName(buddyName);
+    // Map common aliases to the correct canonical names
+    if (n === 'you' || n === 'player' || n === 'protagonist') return userName || 'You';
+    if (n === 'buddy' || n === 'friend' || n === 'best friend' || n === 'companion') return buddyName || 'Buddy';
+    // If name already matches the canonical ones (case-insensitive), return the exact canonical casing
+    if (n === user) return userName || name;
+    if (n === buddy) return buddyName || name;
+    return name;
+  }
+
   function isUserSpeaker(dlg) {
     const n = normalizeSpeakerName(dlg?.speaker);
     const user = normalizeSpeakerName(avatar?.name || '');
@@ -190,45 +203,38 @@ export default function App() {
   function createFallbackChoices(idx, vocabPack) {
     // Create meaningful choices at key moments (every ~5 lines)
     // Return null if no choices should be shown
-    
+
     // Show choices every 5 lines, and only if we have vocab to practice
     const shouldShowChoice = idx > 0 && idx % 5 === 0 && vocabPack && vocabPack.length > 0;
     if (!shouldShowChoice) return null;
-    
+
     // Pick vocab words to practice - use multiple words for variety
     const vocabIndex = Math.floor(idx / 5) % vocabPack.length;
     const vocab = vocabPack[vocabIndex];
     const vocab2 = vocabPack[(vocabIndex + 1) % vocabPack.length];
-    
+
     if (!vocab) return null;
-    
-    // Create 3+ choices with actual dialogue responses using vocabulary
+
+    // Create choices with vocabulary only (no English in parentheses, no English response option)
     const choices = [
-      { 
-        text: `"${vocab.word}" (${vocab.meaning})`, 
-        practiceWord: vocab.word, 
+      {
+        text: `"${vocab.word}"`,
+        practiceWord: vocab.word,
         effect: { tone: 'engaged' },
-        nextDelta: 1 
+        nextDelta: 1
       }
     ];
-    
+
     // Add a second vocab option if available
     if (vocab2 && vocab2.word !== vocab.word) {
       choices.push({
-        text: `"${vocab2.word}" (${vocab2.meaning})`,
+        text: `"${vocab2.word}"`,
         practiceWord: vocab2.word,
         effect: { tone: 'learning' },
         nextDelta: 1
       });
     }
-    
-    // Add an English fallback option
-    choices.push({ 
-      text: 'Respond in English', 
-      effect: { tone: 'comfortable' },
-      nextDelta: 1 
-    });
-    
+
     return choices;
   }
 
@@ -516,16 +522,17 @@ Requirements:
 - The final line should be poignant and set up the next episode
 - IMPORTANT: Include player choices approximately every 5 dialogue lines at key decision moments
 - When choices appear, offer 2-3 specific responses using vocabulary words from the lesson
-- Each choice should represent what the character actually says (not just tone), allowing the player to practice vocabulary in context
+- Choices must be written ONLY in the target language (no English in parentheses, no English translation in the choice text)
+- Do NOT include an English response option; all choices are in the target language
+- Speaker names must be consistent: use exactly "${avatarData.name}" for the protagonist, exactly "${buddy}" for their friend. Do NOT use "You", "Player", or "Protagonist" as speakers. Do NOT swap names.
 
 Format each line as:
 [Character Name]: [Their dialogue]
 
 For choice moments (every ~5 lines), add after the dialogue line:
 CHOICES:
-- "${vp[0]?.word || 'hello'}" (meaning: ${vp[0]?.meaning || 'greeting'})
-- "${vp[1]?.word || 'goodbye'}" (meaning: ${vp[1]?.meaning || 'farewell'})
-- Respond in English
+- "${vp[0]?.word || 'hola'}"
+- "${vp[1]?.word || 'gracias'}"
 
 Example:
 ${buddy}: ${avatarData.name}, look at this old map I found.
@@ -534,9 +541,8 @@ Local Vendor: That place? Many stories about it.
 ${avatarData.name}: What kind of stories?
 Local Vendor: Dark ones. Best to stay away.
 CHOICES:
-- "${vp[0]?.word || 'por favor'}" (please tell me more)
-- "${vp[1]?.word || 'gracias'}" (thank you, I understand)
-- Ask in English: "Why should we stay away?"`;
+- "${vp[0]?.word || 'por favor'}"
+- "${vp[1]?.word || 'gracias'}"`;
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -552,8 +558,8 @@ CHOICES:
       const data = await res.json();
       const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
       
-      // Parse the response into dialogue objects
-      const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
+  // Parse the response into dialogue objects
+  const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
       const dialogues = [];
       let currentDialogue = null;
       let collectingChoices = false;
@@ -569,21 +575,23 @@ CHOICES:
         
         // If collecting choices and line starts with - or bullet
         if (collectingChoices && (line.startsWith('-') || line.startsWith('•') || line.startsWith('*'))) {
-          const choiceText = line.replace(/^[-•*]\s*/, '').trim();
-          
-          // Parse vocab-based choice: "Say: word" or just text
-          const vocabMatch = choiceText.match(/Say:\s*["']?([^"'(]+)["']?/i);
-          if (vocabMatch) {
-            const word = vocabMatch[1].trim();
-            const vocabItem = vp.find(v => v.word === word);
+          const choiceText = line.replace(/^[−\-•*]\s*/, '').trim();
+
+          // Extract a quoted word like "hola" or fallback to the line without any parentheses content
+          const quoted = choiceText.match(/["“”']([^"“”']+)["“”']/);
+          if (quoted) {
+            const word = quoted[1].trim();
             choicesList.push({
-              text: `Say: "${word}"${vocabItem ? ` (${vocabItem.meaning})` : ''}`,
+              text: `"${word}"`,
               practiceWord: word,
               nextDelta: 1
             });
           } else {
+            // Remove any trailing English in parentheses, keep only target-language token
+            const noParen = choiceText.replace(/\s*\([^)]*\)\s*$/, '').trim();
             choicesList.push({
-              text: choiceText,
+              text: noParen,
+              practiceWord: noParen.replace(/\s+.*/, ''),
               nextDelta: 1
             });
           }
@@ -608,8 +616,11 @@ CHOICES:
           dialogues.push(currentDialogue);
         }
         
-        const speaker = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
-        const text = line.slice(colonIdx + 1).trim();
+  const speakerRaw = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
+  const text = line.slice(colonIdx + 1).trim();
+
+  // Map common aliases to the correct speaker names to prevent mix-ups
+  const speaker = mapSpeakerName(speakerRaw, avatarData.name, buddy);
         
         currentDialogue = {
           speaker,
@@ -775,29 +786,23 @@ CHOICES:
         const vocabIndex = Math.floor(i / 5) % vp.length;
         const vocab1 = vp[vocabIndex];
         const vocab2 = vp[(vocabIndex + 1) % vp.length];
-        
+
         choices = [
-          { 
-            text: `"${vocab1.word}" (${vocab1.meaning})`, 
-            practiceWord: vocab1.word, 
-            nextDelta: 1 
+          {
+            text: `"${vocab1.word}"`,
+            practiceWord: vocab1.word,
+            nextDelta: 1
           }
         ];
-        
+
         // Add second vocab option if different
         if (vocab2 && vocab2.word !== vocab1.word) {
           choices.push({
-            text: `"${vocab2.word}" (${vocab2.meaning})`,
+            text: `"${vocab2.word}"`,
             practiceWord: vocab2.word,
             nextDelta: 1
           });
         }
-        
-        // Add English option
-        choices.push({ 
-          text: 'Respond in English', 
-          nextDelta: 1 
-        });
       }
       
       dialogues.push({
