@@ -639,6 +639,8 @@ ${avatarData.name}: It shows a place I've never seen before.`;
     
     return dialogues;
   }
+  const IS_DEV = import.meta.env && import.meta.env.DEV;
+
   function acceptPlot() {
     if (!language) return alert('No language selected.');
     console.log('User accepted plot for', language, 'genres', genres);
@@ -669,7 +671,7 @@ ${avatarData.name}: It shows a place I've never seen before.`;
         const remaining = Math.max(0, 3 - elapsed);
         setPlotTimer(remaining);
       }, 100);
-      
+
       const prevPlot = episodes[language]?.generatedPlot || '';
       const epNum = currentEpisode || 1;
       // Generate or reuse buddy name
@@ -704,7 +706,8 @@ ${avatarData.name}: It shows a place I've never seen before.`;
     prepareLesson(language, epNum); // Pass episode number for unique vocab
     setScreen('animation');
     if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
-    animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 150000);
+    const delay = IS_DEV ? 1000 : 150000;
+    animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, delay);
   }
   function finishEpisode(epNum) {
     console.log('Finishing episode', epNum, 'in', language);
@@ -1257,6 +1260,17 @@ ${avatarData.name}: It shows a place I've never seen before.`;
                   setScreen('dialogue');
                 });
               }} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Continue →</button>
+            </div>
+          )}
+          {IS_DEV && (
+            <div style={{ marginTop: 12 }}>
+              <button data-testid="btn-dev-auto-pass" onClick={() => {
+                if (!Array.isArray(quizItems) || quizItems.length === 0) return;
+                // Mark all as answered correctly on first try (dev only)
+                setQuizItems(prev => prev.map(q => ({ ...q, userAnswerIndex: 0 })));
+                setQuizResults(Array(quizItems.length).fill(true));
+                setFirstTryResults(Array(quizItems.length).fill(true));
+              }} style={{ padding: '8px 12px', borderRadius: 10, background: 'rgba(0,0,0,0.2)', color: 'white', border: '1px solid rgba(255,255,255,0.3)' }}>Dev: Auto Pass</button>
             </div>
           )}
         </div>
