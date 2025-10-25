@@ -430,21 +430,32 @@ export default function App() {
   // --- Embedded AI (local) generator: creates a unique story rather than just summarizing inputs.
   function aiGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [], plotState: ps = { tone: 'neutral', decisions: [] } }) {
     // Simple deterministic-ish pseudo-AI writer using templates and seeded randomness
-  let seed = (genresList.join('|') + '::' + (hobbies || []).join('|') + '::' + (avatarData.name || '')).split('').reduce((s,c)=>s+ c.charCodeAt(0), 0);
-  const rand = (n=1) => { seed = (seed * 9301 + 49297) % 233280; return Math.abs(seed / 233280) * n; };
+    let seed = (genresList.join('|') + '::' + (hobbies || []).join('|') + '::' + (avatarData.name || '')).split('').reduce((s,c)=>s+ c.charCodeAt(0), 0);
+    const rand = (n=1) => { seed = (seed * 9301 + 49297) % 233280; return Math.abs(seed / 233280) * n; };
+
+    // Map selected genres to specific beats to ensure genre alignment
+    const lowerGenres = (genresList || []).map(g => (g || '').toLowerCase());
+    const has = g => lowerGenres.includes(g);
+    const beats = [];
+    if (has('mystery')) beats.push('an encoded note tucked behind a broken tile, and a clue only locals whisper about');
+    if (has('adventure')) beats.push('a scramble over rooftops and a chase through a lantern-lit market');
+    if (has('romance')) beats.push('a spark between glances, a shared umbrella, and a choice that feels like a promise');
+    if (has('comedy')) beats.push('a luggage mix-up, a talkative parrot, and a misunderstanding that turns into laughter');
+    if (has('drama')) beats.push('old family tensions resurfacing at the worst moment');
+    if (has('sci-fi')) beats.push('a glitching device that records memories and a stranger who knows tomorrow');
+    if (beats.length === 0) beats.push('small discoveries that grow into something larger');
+
     // Use stronger, handcrafted prose mixing in user choices
-  const tone = (ps && ps.tone) || 'neutral';
-  const toneAdj = tone === 'friendly' ? 'warm' : tone === 'bold' ? 'electric' : 'steady';
-  const opening = `On a ${toneAdj} morning in a ${lang}-speaking port, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and an old ticket to a life that might be waiting.`;
-    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a secret gallery, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
-    const conflict = `The city doesn't give up answers easily. Small betrayals, a mysterious figure who remembers your family name, and a spilled map at a midnight mercado force choices that test honesty, courage and the language you're learning.`;
-    const close = `By the time spring arrives, what started as a lesson in words becomes a lesson in belonging.`;
-    // Combine and add unique beats using traits to color characters
-    const traitBeat = traits && traits.length ? ` Along the way, ${traits.slice(0,2).join(' and ')} decisions steer moments that feel both intimate and large.` : '';
-    const recent = (ps && Array.isArray(ps.decisions) ? ps.decisions.slice(-3) : []).map((d,i) => (d?.effect?.tone ? d.effect.tone : 'choice')).join(', ');
+    const tone = (ps && ps.tone) || 'neutral';
+    const toneAdj = tone === 'friendly' ? 'warm' : tone === 'bold' ? 'electric' : 'steady';
+    const opening = `On a ${toneAdj} ${lang}-speaking morning, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and a clue that shouldn’t exist.`;
+    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they follow threads: ${beats.slice(0,2).join('; ')}.`;
+    const conflict = `But the city doesn’t give up answers easily. Each turn forces choices—who to trust, what to risk, and whether to listen to the pull of the heart or the call of the unknown.`;
+    const close = `By nightfall, a door opens onto the next chapter—just beyond reach, daring them to step through.`;
+    const traitBeat = traits && traits.length ? ` Along the way, ${traits.slice(0,2).join(' and ')} decisions color every encounter.` : '';
+    const recent = (ps && Array.isArray(ps.decisions) ? ps.decisions.slice(-3) : []).map(d => (d?.effect?.tone ? d.effect.tone : 'choice')).join(', ');
     const choiceBeat = recent ? ` Recent choices leaned ${recent}.` : '';
-    const full = `${opening} ${mid} ${conflict}${traitBeat}${choiceBeat} ${close}`;
-    return full;
+    return `${opening} ${mid} ${conflict}${traitBeat}${choiceBeat} ${close}`;
   }
 
   // Optional remote LLM call (OpenAI) — only used if VITE_OPENAI_KEY is set at build/runtime.
@@ -472,7 +483,8 @@ Requirements:
 - Make it emotional and immersive
 - NO mentions of teaching, lessons, or language learning
 - End with suspense
-- MUST be 1 paragraph, 3-4 sentences total`;
+- MUST be 1 paragraph, 3-4 sentences total
+- STRICT: The plot must clearly fit the selected genres: ${genresList.join(', ') || 'slice-of-life'}. Use genre-specific elements (e.g., clues and revelations for Mystery, fast-paced pursuits for Adventure, attraction and choices for Romance, wit and situational humor for Comedy, high-stakes interpersonal conflict for Drama, speculative technology or anomalies for Sci-Fi). Avoid out-of-genre elements.`;
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
