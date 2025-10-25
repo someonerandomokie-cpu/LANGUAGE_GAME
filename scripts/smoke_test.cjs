@@ -55,10 +55,18 @@ const puppeteer = require('puppeteer');
   // Lesson → Quiz
   await clickTestId('btn-lesson-quiz');
 
-  // Quiz: use dev auto-pass, then continue
-  await clickTestId('btn-dev-auto-pass');
+  // Quiz: answer all questions correctly
+  await page.waitForTimeout(500);
+  const questions = await page.$$('div[style*="background: rgba(255, 255, 255, 0.1)"]');
+  for (let i = 0; i < Math.min(5, questions.length); i++) {
+    // Click first answer choice for each question (assumed correct for basic test)
+    const choices = await page.$$('button[style*="background"]');
+    if (choices[i * 4]) await choices[i * 4].click();
+    await page.waitForTimeout(200);
+  }
 
   // All answered & passed, click Continue →
+  await page.waitForSelector('[data-testid="btn-quiz-continue"]', { visible: true });
   await clickTestId('btn-quiz-continue');
 
   // Wait for confetti period and transition to dialogue
