@@ -149,6 +149,17 @@ export default function App() {
     ];
   }
 
+  // Build phrase-based choices using lesson vocab examples, so users pick exact responses in the target language
+  function buildPhraseChoicesForVocab(vocab) {
+    if (!vocab) return [];
+    const exs = Array.isArray(vocab.examples) ? vocab.examples.slice(0, 3) : [];
+    const picks = exs.length ? exs : [vocab.word, `${vocab.word}!`].slice(0, 2);
+    const choices = picks.map(p => ({ text: `Say: "${p}"`, sayText: p, usesWord: vocab.word, nextDelta: 1 }));
+    // Always include an option to skip if the user doesn't want to practice here
+    choices.push({ text: 'Continue without practice', nextDelta: 1 });
+    return choices;
+  }
+
   function applyChoiceEffect(effect) {
     if (!effect) return;
     setPlotState(prev => {
@@ -463,17 +474,15 @@ ${avatarData.name}: It shows a place I've never seen before.`;
         const speaker = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, ''); // Remove numbering if present
         const text = line.slice(colonIdx + 1).trim();
         
-        // Add practice choices every ~20 lines
+        // Add targeted practice choices only at sparse, meaningful beats (~every 20 lines)
         const needsPractice = vp.length > 0 && i > 0 && i % 20 === 0 && i < 80;
         const vocabForPractice = needsPractice ? vp[Math.floor(i / 20) % vp.length] : null;
         
         dialogues.push({
           speaker,
           text,
-          choices: vocabForPractice ? [
-            { text: `Respond using "${vocabForPractice.word}"`, practiceWord: vocabForPractice.word, nextDelta: 1 },
-            { text: 'Continue without practice', nextDelta: 1 }
-          ] : null,
+          // Only include choices at practice beats; choices are phrase-based using lesson vocab
+          choices: vocabForPractice ? buildPhraseChoicesForVocab(vocabForPractice) : null,
           isFinalLine: i === lines.length - 1,
           setting: i === lines.length - 1 ? 'The moment hangs in the air, charged with possibility.' : undefined
         });
@@ -496,10 +505,7 @@ ${avatarData.name}: It shows a place I've never seen before.`;
     // Opening sequence with practice
     const firstVocab = vp && vp.length ? vp[0] : null;
     dialogues.push({ speaker: bName, text: `Hey ${aName}, did you see the mural by the harbor? There's a symbol there that looks like your family crest.` });
-    dialogues.push({ speaker: aName, text: `I thought I recognized something... I can't read the name on it, but it feels familiar.`, choices: firstVocab ? [
-      { text: `Respond using the word "${firstVocab.word}"`, practiceWord: firstVocab.word, nextDelta: 1 },
-      { text: `Say: "I don't know yet."`, nextDelta: 2 }
-    ] : null });
+    dialogues.push({ speaker: aName, text: `I thought I recognized something... I can't read the name on it, but it feels familiar.`, choices: firstVocab ? buildPhraseChoicesForVocab(firstVocab) : null });
     
     // Build out 100 dialogue lines with varied speakers and moments
     const vocabWords = vp.map(v => v.word).filter(Boolean);
@@ -616,17 +622,15 @@ ${avatarData.name}: It shows a place I've never seen before.`;
       else if (speakerIndex === 1) speaker = aName;
       else speaker = locals[(speakerIndex - 2) % locals.length];
       
-      // Add practice choice every 20 lines if vocab available
+      // Add practice choice every ~20 lines if vocab available
       const needsPractice = vp.length > 0 && i > 0 && i % 20 === 0 && i < 80;
       const vocabForPractice = needsPractice ? vp[Math.floor(i / 20) % vp.length] : null;
       
       dialogues.push({
         speaker,
         text: line,
-        choices: vocabForPractice ? [
-          { text: `Respond using "${vocabForPractice.word}"`, practiceWord: vocabForPractice.word, nextDelta: 1 },
-          { text: 'Continue without practice', nextDelta: 1 }
-        ] : null
+        // Only include choices at explicit practice beats; choices are phrase-based using lesson vocab
+        choices: vocabForPractice ? buildPhraseChoicesForVocab(vocabForPractice) : null
       });
     });
     
@@ -1161,6 +1165,7 @@ ${avatarData.name}: It shows a place I've never seen before.`;
     // Quiz screen is separate — implements first-try tracking and retake loop
     const firstTryPct = computeFirstTryScore();
     const passed = firstTryPct >= 80;
+    const allAnswered = Array.isArray(quizItems) && quizItems.length > 0 && quizItems.every(q => q.userAnswerIndex !== null && q.userAnswerIndex !== undefined);
 
     return (
       <div style={{ ...styles.container, background: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)' }}>
@@ -1210,42 +1215,50 @@ ${avatarData.name}: It shows a place I've never seen before.`;
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginTop: 40, animation: 'fadeIn 1s ease-out 0.4s both' }}>
-          {!passed && (
-            // Per your requirement: when the Retake button appears, show the percentage answered correctly right above it.
+          {!allAnswered && (
+            <div style={{ color: 'white', fontSize: '1.1rem' }}>Answer all questions to see your result.</div>
+          )}
+
+          {allAnswered && !passed && (
+            // When the Retake button appears, show the requirement above it.
             <div style={{ textAlign: 'center' }}>
               <div style={{ marginBottom: 15, color: 'white', fontSize: '1.2rem' }}>You need 80% to continue.</div>
               <button onClick={retakeQuiz} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Retake Quiz</button>
             </div>
           )}
 
-          {passed && (
-              <div style={{ textAlign: 'center' }}>
-                <p style={{ color: 'white', fontSize: '1.5rem', marginBottom: 20 }}>Congratulations! You scored {Math.round(firstTryPct)}%!</p>
-                <button onClick={() => {
-                  setShowConfetti(true);
-                  tts.speak('Congratulations!');
-                  setTimeout(() => setShowConfetti(false), 3000);
-                    // Generate dialogues for the story (prefer remote) and move into the dialogue flow rather than a static story page
-                    (async () => {
-                      const prevPlot = episodes[language]?.generatedPlot || '';
-                      const prevPlotState = episodes[language]?.plotState || plotState;
-                      const epNum = currentEpisode || 1;
-                      const storyText = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
-                      const dialogues = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
-                      const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
-                      setPlotSummary(storyText);
-                      setStoryDialogues(padded);
-                      setDialogueIndex(0);
-                      // persist generated plot+dialogues
-                      setEpisodes(prev => {
-                        const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
-                        return { ...prev, [language]: { ...langData, generatedPlot: storyText, generatedDialogues: padded } };
-                      });
-                      setScreen('dialogue');
-                    })();
-                }} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Continue →</button>
-              </div>
-            )}
+          {allAnswered && passed && (
+            <div style={{ textAlign: 'center' }}>
+              <p style={{ color: 'white', fontSize: '1.5rem', marginBottom: 20 }}>Congratulations! You scored {Math.round(firstTryPct)}%!</p>
+              <button onClick={() => {
+                // Show confetti, then navigate to dialogue immediately after confetti finishes,
+                // while generating plot/dialogues in parallel.
+                setShowConfetti(true);
+                tts.speak('Congratulations!');
+                const confettiWait = new Promise(resolve => setTimeout(resolve, 3000));
+                const contentReady = (async () => {
+                  const prevPlot = episodes[language]?.generatedPlot || '';
+                  const prevPlotState = episodes[language]?.plotState || plotState;
+                  const epNum = currentEpisode || 1;
+                  const storyText = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
+                  const dialogues = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
+                  const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
+                  setPlotSummary(storyText);
+                  setStoryDialogues(padded);
+                  setDialogueIndex(0);
+                  // persist generated plot+dialogues
+                  setEpisodes(prev => {
+                    const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
+                    return { ...prev, [language]: { ...langData, generatedPlot: storyText, generatedDialogues: padded } };
+                  });
+                })();
+                Promise.all([confettiWait, contentReady]).then(() => {
+                  setShowConfetti(false);
+                  setScreen('dialogue');
+                });
+              }} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Continue →</button>
+            </div>
+          )}
         </div>
 
         {showConfetti && <Confetti />}
@@ -1275,8 +1288,8 @@ ${avatarData.name}: It shows a place I've never seen before.`;
     return (
       <div style={{ ...styles.container, justifyContent: 'center' }} onClick={() => {
         // Advance dialogue on background click (not on controls)
-        const currentChoices = Array.isArray(dlg?.choices) ? dlg.choices : [];
-        const shouldOfferChoices = dlg && !isLastLine && !isUserSpeaker(dlg);
+        const hasChoices = Array.isArray(dlg?.choices) && dlg.choices.length > 0;
+        const shouldOfferChoices = dlg && !isLastLine && !isUserSpeaker(dlg) && hasChoices;
         if (shouldOfferChoices) {
           // Do not advance if the user should select a reply
           return;
@@ -1314,12 +1327,11 @@ ${avatarData.name}: It shows a place I've never seen before.`;
                   )}
                 </div>
               </div>
-              {/* Interactive choices area (only when replying to another character) */}
-              {!isLastLine && dlg && !isUserSpeaker(dlg) && (
+              {/* Interactive choices area (only when replying to another character AND choices are provided for this moment) */}
+              {!isLastLine && dlg && !isUserSpeaker(dlg) && Array.isArray(dlg.choices) && dlg.choices.length > 0 && (
                 <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {(function() {
-                    const base = Array.isArray(dlg.choices) ? dlg.choices : [];
-                    const finalChoices = base.length >= 3 ? base : createFallbackChoices(dialogueIndex);
+                    const finalChoices = Array.isArray(dlg.choices) ? dlg.choices : [];
                     return finalChoices.map((c, ci) => (
                       <button key={ci} onClick={(e) => {
                         e.stopPropagation();
@@ -1332,6 +1344,19 @@ ${avatarData.name}: It shows a place I've never seen before.`;
                           const distractors = (vocabPack || []).filter(v => v.word !== c.practiceWord && v.meaning !== correctMeaning).slice(0, 2).map(v => v.meaning);
                           const opts = [correctMeaning, ...distractors].sort(() => Math.random() - 0.5);
                           setPracticeState({ targetWord: c.practiceWord, options: opts, correctIndex: opts.indexOf(correctMeaning), nextIndex: (dialogueIndex + (c.nextDelta || 1)) });
+                          return;
+                        }
+                        // If the choice provides an exact phrase to say, insert a user line with that phrase
+                        if (c.sayText) {
+                          const userLine = { speaker: avatar?.name || 'You', text: c.sayText };
+                          setStoryDialogues(prev => {
+                            const before = prev.slice(0, dialogueIndex + 1);
+                            const after = prev.slice(dialogueIndex + 1);
+                            return [...before, userLine, ...after];
+                          });
+                          setDialogueIndex(dialogueIndex + 1);
+                          if (c.effect) applyChoiceEffect(c.effect);
+                          return;
                         } else {
                           // apply plot effect if present
                           if (c.effect) applyChoiceEffect(c.effect);
