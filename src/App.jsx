@@ -6,75 +6,52 @@ import React, { useEffect, useState, useRef } from 'react';
 const LANGUAGES = ['Spanish','French','Chinese','Russian','Italian','Arabic','Japanese','Korean','Portuguese','German','Hindi','Turkish','Dutch','Swedish','Polish'];
 const AVAILABLE_GENRES = ['Romance', 'Adventure', 'Mystery', 'Comedy', 'Drama', 'Sci-Fi'];
 
-// Avatar categories: added Lip Shape (before Face Shape) and Nose Shape (after Eye Color)
-const AVATAR_CATEGORIES = {
-  Gender: ['Female', 'Male'],
-  'Eye Shape': ['Almond', 'Round', 'Hooded', 'Monolid'],
-  'Eye Color': ['Brown', 'Blue', 'Green', 'Hazel', 'Grey'],
-  'Nose Shape': ['Button', 'Roman', 'Greek', 'Snub', 'Aquiline'],
-  'Lip Shape': ['Full', 'Thin', 'Heart', 'Bow', 'Downturned'],
-  'Face Shape': ['Oval', 'Round', 'Square', 'Heart', 'Diamond'],
-  'Hair Style': ['Long waves', 'Bun', 'Curly bob', 'Ponytail', 'Pixie'],
-  'Hair Color': ['Black', 'Brown', 'Blonde', 'Red', 'Silver', 'Pastel'],
-  'Skin Tone': ['Very light', 'Light', 'Medium', 'Tan', 'Dark']
+// Country mapping by language for grounded settings
+const COUNTRY_BY_LANGUAGE = {
+  Spanish: 'Spain',
+  French: 'France',
+  Chinese: 'China',
+  Russian: 'Russia',
+  Italian: 'Italy',
+  Arabic: 'Morocco',
+  Japanese: 'Japan',
+  Korean: 'South Korea',
+  Portuguese: 'Portugal',
+  German: 'Germany',
+  Hindi: 'India',
+  Turkish: 'Turkey',
+  Dutch: 'Netherlands',
+  Swedish: 'Sweden',
+  Polish: 'Poland'
 };
 
-const PERSONALITY_TRAITS = ['Brave', 'Curious', 'Shy', 'Charming', 'Ambitious', 'Kind', 'Sarcastic', 'Dreamy', 'Confident', 'Calm'];
-const HOBBIES = ['Photography', 'Cooking', 'Drawing', 'Dancing', 'Hiking', 'Music', 'Coding', 'Reading', 'Gardening', 'Sports'];
+// Personality and hobbies options (10 each)
+const PERSONALITY_TRAITS = ['Curious', 'Brave', 'Kind', 'Adventurous', 'Calm', 'Funny', 'Creative', 'Persistent', 'Empathetic', 'Resourceful'];
+const HOBBIES = ['Cooking', 'Music', 'Art', 'Travel', 'Reading', 'Sports', 'Photography', 'Gaming', 'Hiking', 'Dancing'];
 
-// Helper: confetti
-function Confetti() {
-  const pieces = Array.from({ length: 80 });
-  return (
-    <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none' }}>
-      {pieces.map((_, i) => (
-        <div
-          key={i}
-          style={{
-            position: 'absolute',
-            left: `${Math.random() * 100}%`,
-            top: `${Math.random() * 100}%`,
-            width: 8,
-            height: 14,
-            background: `hsl(${Math.random() * 360}deg, 70%, 60%)`,
-            opacity: 0.9,
-            transform: `rotate(${Math.random() * 360}deg)`
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
+// Lightweight speech synthesis helper (lesson-only TTS)
 function useSpeech() {
   const speak = (text) => {
     try {
-      if (!window.speechSynthesis) return;
-      const u = new SpeechSynthesisUtterance(text);
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(u);
-    } catch (e) { console.warn('TTS failed', e); }
+      const synth = window.speechSynthesis;
+      if (!synth || !text) return;
+      const utter = new SpeechSynthesisUtterance(text);
+      synth.cancel();
+      synth.speak(utter);
+    } catch {}
   };
   return { speak };
 }
 
-export default function App() {
-  // Core state (merged)
-  const [avatar, setAvatar] = useState({
-    id: 'user_001',
-    name: '',
-    gender: 'Female',
-    appearance: {},
-    clothes: {},
-    traits: [],
-    hobbies: [],
-    style: 'Casual' // kept in state but UI removed per request
-  });
+// Minimal confetti placeholder
+function Confetti() {
+  return <div style={{ position: 'fixed', top: 10, right: 10, fontSize: 24 }}>🎉</div>;
+}
 
-  const [selectedCategory, setSelectedCategory] = useState('Gender');
-  // genres state now used as the *current* selection while editing; per-language genres are saved in episodes[lang].genres
+export default function App() {
+  const [avatar, setAvatar] = useState({ id: 'user_001', name: '', appearance: {}, traits: [], hobbies: [], avatarUrl: '' });
+  const [language, setLanguage] = useState('');
   const [genres, setGenres] = useState([]);
-  const [language, setLanguage] = useState(null);
   const [plotSummary, setPlotSummary] = useState('');
   // episodes will now track per-language progress including genres and started flag
   const [episodes, setEpisodes] = useState({});
@@ -151,6 +128,26 @@ export default function App() {
       console.log('App unmounted');
       if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
     };
+  }, []);
+
+  // Listen for avatar export messages from Ready Player Me iframe and save model URL
+  useEffect(() => {
+    function handleRpmMessage(event) {
+      try {
+        const data = event.data;
+        if (!data) return;
+        // Expected payload: { type: 'v1.avatar.exported', url: 'https://models.readyplayer.me/....glb' }
+        if (data.type === 'v1.avatar.exported' && data.url) {
+          setAvatar(prev => ({ ...prev, avatarUrl: data.url }));
+          // Return to avatar screen after export
+          setScreen('avatar');
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    window.addEventListener('message', handleRpmMessage);
+    return () => window.removeEventListener('message', handleRpmMessage);
   }, []);
 
   // Auto-play TTS for dialogue lines when index changes
@@ -400,8 +397,9 @@ export default function App() {
     // Use stronger, handcrafted prose mixing in user choices
   const tone = (ps && ps.tone) || 'neutral';
   const toneAdj = tone === 'friendly' ? 'warm' : tone === 'bold' ? 'electric' : 'steady';
-  const opening = `On a ${toneAdj} morning in a ${lang}-speaking port, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and an old ticket to a life that might be waiting.`;
-    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a secret gallery, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
+  const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
+  const opening = `On a ${toneAdj} morning in ${country}, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and an old ticket to a life that might be waiting.`;
+    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc in ${country}, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a hidden courtyard, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
     const conflict = `The city doesn't give up answers easily. Small betrayals, a mysterious figure who remembers your family name, and a spilled map at a midnight mercado force choices that test honesty, courage and the language you're learning.`;
     const close = `By the time spring arrives, what started as a lesson in words becomes a lesson in belonging.`;
     // Combine and add unique beats using traits to color characters
@@ -431,10 +429,13 @@ export default function App() {
   const contextNote = previousPlot ? `\n\nPrevious plot: ${previousPlot}\n\nContinue the story naturally from where it left off, maintaining continuity.` : '';
   const toneHint = ps && ps.tone ? `\n\nTone preference from player choices so far: ${ps.tone}.` : '';
   const decisionsHint = ps && Array.isArray(ps.decisions) && ps.decisions.length ? `\n\nRecent player decisions: ${ps.decisions.slice(-5).map((d,i)=> d?.effect?.tone || 'choice').join(', ')}.` : '';
+  const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
   const prompt = `Write a SHORT, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}.
 
 Main Character: ${avatarData.name || 'The Traveler'}
-Setting: ${lang}-speaking location
+Language: ${lang}
+Country: ${country}
+Setting: A specific place in ${country}
 Genres: ${genresList.join(', ') || 'slice-of-life'}
 Personality Traits: ${traits.join(', ') || 'curious'}
 Hobbies: ${hobbies.join(', ') || 'exploring'}
@@ -444,6 +445,7 @@ Requirements:
 - Start with a HOOK that grabs attention immediately
 - Focus on ${avatarData.name} experiencing adventure and interacting with ${buddy}
 - Include ONE specific conflict or mystery
+- Conflicts, cultural details, and place names must fit ${country}
 - Make it emotional and immersive
 - NO mentions of teaching, lessons, or language learning
 - End with suspense
@@ -521,14 +523,17 @@ Requirements:
       const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
       if (!key) throw new Error('No OpenAI key');
       
-      const vocabList = vp.map(v => `${v.word} (${v.meaning})`).join(', ');
-      const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
+  const vocabList = vp.map(v => `${v.word} (${v.meaning})`).join(', ');
+  const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
+  const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
 
 Plot: ${plot}
 
 Main Character: ${avatarData.name}
 Friend: ${buddy}
-Setting: ${lang}-speaking location
+Language: ${lang}
+Country: ${country}
+Setting: Specific places in ${country}
 Vocabulary words to naturally use: ${vocabList}
 
 Tone preference from player choices so far: ${ps?.tone || 'neutral'}
@@ -539,6 +544,7 @@ Requirements:
 - Tell the story through conversation - advance the plot with each line
 - Make it feel natural, fun, and emotional
 - Focus on adventure and interaction - NO teaching or explaining words
+- Use culturally and geographically appropriate references for ${country}
 - Include moments of discovery, tension, and connection
 - The final line should be poignant and set up the next episode
 - Maintain consistent speaker names: protagonist is "${avatarData.name}", friend is "${buddy}". Do NOT use "You". Use named locals for other characters and keep them consistent.
@@ -665,6 +671,35 @@ CHOICES:
     } catch (e) {
       console.warn('Remote dialogue generation failed, using local fallback', e);
       return aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
+    }
+  }
+
+  // Generate lesson vocabulary via AI (backend preferred, fallback to direct OpenAI, else null)
+  async function remoteGenerateVocab({ lang, episodeNum = 1 }) {
+    const backend = import.meta.env.VITE_BACKEND_URL;
+    const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
+    const userPrompt = `Generate a JSON array of 5 vocabulary items for learning ${lang}, episode ${episodeNum}. Start very simple and get slightly harder by item 5, but keep everything beginner-friendly. Focus on practical, high-frequency words or short phrases useful in ${country}. Each item MUST be an object with fields: "word" (in ${lang}), "meaning" (English), "examples" (array with 1-2 very short phrases in ${lang}). Output ONLY valid JSON array.`;
+    try {
+      if (backend) {
+        const r = await fetch(`${backend.replace(/\/$/, '')}/api/vocab`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang, episodeNum, country }) });
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data.pack)) return data.pack;
+        }
+      }
+      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
+      if (!key) throw new Error('No OpenAI key');
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: userPrompt }], max_tokens: 500, temperature: 0.7 })
+      });
+      if (!res.ok) throw new Error('LLM vocab call failed');
+      const data = await res.json();
+      const txt = data.choices?.[0]?.message?.content?.trim() || '[]';
+      return JSON.parse(txt);
+    } catch (e) {
+      console.warn('Vocab generation failed', e);
+      return null;
     }
   }
 
@@ -887,8 +922,8 @@ CHOICES:
     setBuddyName(buddy);
     prepareLesson(language, epNum); // Pass episode number for unique vocab
     setScreen('animation');
-    if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
-    animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 150000);
+  if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
+  animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 5000);
   }
   function finishEpisode(epNum) {
     console.log('Finishing episode', epNum, 'in', language);
@@ -913,7 +948,7 @@ CHOICES:
     return name;
   }
 
-  function prepareLesson(lang, episodeNum = 1) {
+  async function prepareLesson(lang, episodeNum = 1) {
     console.log('Preparing lesson for', lang, 'episode', episodeNum);
     const BANK = {
       Spanish: [
@@ -987,18 +1022,22 @@ CHOICES:
       ]
     };
 
+    // Try AI-generated vocab first for all languages
+    let pack = await remoteGenerateVocab({ lang, episodeNum });
     const pool = BANK[lang] || BANK['Spanish'];
-    // Select vocab for this specific episode - 5 words starting from episode offset
-    const startIdx = ((episodeNum - 1) * 5) % pool.length;
-    const pack = [];
-    for (let i = 0; i < 5; i++) {
-      pack.push(pool[(startIdx + i) % pool.length]);
+    if (!pack || pack.length < 5) {
+      // Fallback to local bank (ensures consistent structure if AI is unavailable)
+      const startIdx = ((episodeNum - 1) * 5) % pool.length;
+      pack = [];
+      for (let i = 0; i < 5; i++) {
+        pack.push(pool[(startIdx + i) % pool.length]);
+      }
     }
-    
+
     setVocabPack(pack);
 
     const q = pack.map((v, idx) => {
-      const distractors = pool.filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
+      const distractors = (pool || []).filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
       const choices = [v.meaning, ...distractors].sort(() => Math.random() - 0.5).map(text => ({ text, correct: text === v.meaning }));
       return { id: `q_${idx}`, prompt: `What does \"${v.word}\" mean?`, choices, userAnswerIndex: null };
     });
@@ -1089,31 +1128,20 @@ CHOICES:
         `}</style>
         <h1 style={styles.title}>Design Your Avatar</h1>
         <form onSubmit={handleAvatarSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <input value={avatar.name} onChange={(e) => setAvatar(a => ({ ...a, name: e.target.value }))} placeholder="Enter a name" style={styles.input} />
+          <input value={avatar.name} onChange={(e) => setAvatar(a => ({ ...a, name: e.target.value }))} placeholder="Enter your name" style={styles.input} />
 
-          <div style={styles.avatarLayout}>
-            <div style={styles.categoryPanel}>
-              {Object.keys(AVATAR_CATEGORIES).map(cat => (
-                <button key={cat} type="button" onClick={() => setSelectedCategory(cat)}
-                  style={{ ...styles.categoryButton, background: selectedCategory === cat ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)' : 'rgba(255, 255, 255, 0.2)' }}>
-                  {cat}
-                </button>
-              ))}
-            </div>
-
-            <div style={styles.optionPanel}>
-              {AVATAR_CATEGORIES[selectedCategory].map(option => (
-                <button key={option} type="button" onClick={() => handleAppearanceChange(selectedCategory, option)}
-                  style={{ ...styles.optionButton, background: avatar.appearance[selectedCategory] === option ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' : 'rgba(255, 255, 255, 0.2)' }}>
-                  {option}
-                </button>
-              ))}
-            </div>
+          {/* Embedded 3D Avatar Creator (Ready Player Me) */}
+          <div style={{ width: '100%', maxWidth: 1000, height: '70vh', borderRadius: 16, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.25)', background: 'rgba(0,0,0,0.15)' }}>
+            <iframe title="ReadyPlayerMe Creator" src="https://readyplayer.me/avatar?frameApi" style={{ width: '100%', height: '100%', border: 'none' }} allow="camera; microphone; autoplay; clipboard-write; encrypted-media;" />
           </div>
 
-          {/* STYLE UI removed per request (kept state) */}
-
-          {/* Traits & Hobbies removed from avatar page — they appear on the next screen */}
+          {/* Status + actions */}
+          <div style={{ width: '100%', maxWidth: 1000, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+            <div style={{ color: 'white', opacity: 0.9 }}>{avatar.avatarUrl ? '3D Avatar saved ✓' : 'Export in the creator to save your 3D avatar.'}</div>
+            {avatar.avatarUrl && (
+              <a href={avatar.avatarUrl} target="_blank" rel="noreferrer" style={{ padding: '10px 14px', borderRadius: 12, border: 'none', background: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: 600, cursor: 'pointer', textDecoration: 'none' }}>Preview 3D</a>
+            )}
+          </div>
 
           <div style={{ marginTop: 18, width: '100%', display: 'flex', justifyContent: 'flex-end' }}>
             <button type="submit" style={{ ...styles.continueButton, marginTop: 0 }}>Continue →</button>
@@ -1122,6 +1150,8 @@ CHOICES:
       </div>
     );
   }
+
+  
 
   if (screen === 'opening') {
     return (
