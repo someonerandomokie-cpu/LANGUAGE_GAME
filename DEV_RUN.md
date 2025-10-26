@@ -1,25 +1,29 @@
 # Run the Language Game locally
 
-This workspace now includes a minimal Vite + React scaffold so you can run the `App` component in `src/App.jsx`.
+Vite + React frontend in `src/App.jsx` and an optional Node/Express backend in `server/index.js`.
 
-Steps:
+## Quick start
 
-1. Install dependencies:
+1) Install deps
+- Frontend (root):
+	- npm install
+- Backend:
+	- cd server && npm install
 
-```bash
-cd /project/workspace
-npm install
-```
+2) Environment
+- Create `server/.env` (do NOT commit):
+	- OPENAI_API_KEY=sk-...
+	- PORT=8787
+	- ORIGIN=http://localhost:5173
+- Optionally create root `.env`:
+	- VITE_BACKEND_URL=http://localhost:8787
 
-2. Start the dev server:
+3) Run
+- Terminal A (repo root): npm run server
+- Terminal B (repo root): npm run dev
+- Open http://localhost:5173
 
-```bash
-npm run dev
-```
-
-Open the URL printed by Vite (usually http://localhost:5173) in your browser.
-
-Note: this adds a small dev scaffold and does not modify your original `main` file.
+The frontend calls the backend when `VITE_BACKEND_URL` is set; otherwise it will try the client key or fall back to a local generator.
 
 ## Notes: PlotState, choices, and continuity
 
