@@ -4,28 +4,7 @@ import React, { useEffect, useState, useRef } from 'react';
 const LANGUAGES = ['Spanish','French','Chinese','Russian','Italian','Arabic','Japanese','Korean','Portuguese','German','Hindi','Turkish','Dutch','Swedish','Polish'];
 const AVAILABLE_GENRES = ['Romance', 'Adventure', 'Mystery', 'Comedy', 'Drama', 'Sci-Fi'];
 const AVATAR_CATEGORIES = {
-```
-
-## Developer Notes
-
-- PlotState continuity
-  - `plotState` tracks a tone (friendly, neutral, bold) and a list of player decisions with effects.
-  - At the end of each episode’s dialogue, we persist `plotState` into `episodes[language].plotState`.
-  - The next episode’s story and dialogue generation receive this `plotState` so tone and recent decisions steer the narrative.
-
-- Branching and choices
-  - Reply options can carry an `effect` (e.g., tone) and a `nextDelta` to branch the next line(s).
-  - If the model returns fewer than three reply options, we add fallbacks: “Respond warmly”, “Stay neutral”, “Be bold”.
-  - When choices are expected, background clicks won’t advance; the player must pick an option.
-
-- Dialogue length guarantee
-  - After generation, dialogues are padded to ensure at least 100 pages per episode and the final page is flagged.
-
-- Future enhancements
-  - Expand `plotState` beyond tone (relationship scores, risk/rule-breaking, trust) and use them for deeper branching.
-  - Feed richer state back into subsequent episodes for stronger continuity.
-  - Optionally surface tone/branch outcomes in the UI (subtle badges, recap).
-
+  Gender: ['Female', 'Male'],
   'Eye Shape': ['Almond', 'Round', 'Hooded', 'Monolid'],
   'Eye Color': ['Brown', 'Blue', 'Green', 'Hazel', 'Grey'],
   'Nose Shape': ['Button', 'Roman', 'Greek', 'Snub', 'Aquiline'],

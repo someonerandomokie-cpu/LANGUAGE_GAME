@@ -99,10 +99,47 @@ export default function App() {
   const [dialogueIndex, setDialogueIndex] = useState(0);
   const [translatePopup, setTranslatePopup] = useState({ visible: false, text: '' });
   const [practiceState, setPracticeState] = useState(null); // { targetWord, options: [], correctIndex, nextIndex }
+  // Prefetch next story/dialogues during quiz to eliminate delay on continue
+  const [prefetch, setPrefetch] = useState({ inFlight: false, plot: '', dialogues: [] });
+
+  // Kick off background generation when entering quiz
+  useEffect(() => {
+    if (screen !== 'quiz') return;
+    if (prefetch.inFlight || (prefetch.plot && prefetch.dialogues && prefetch.dialogues.length)) return;
+    (async () => {
+      try {
+        setPrefetch(prev => ({ ...prev, inFlight: true }));
+        const prevPlot = episodes[language]?.generatedPlot || '';
+        const prevPlotState = episodes[language]?.plotState || plotState;
+        const epNum = currentEpisode || 1;
+        const storyText = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
+        const dialogues = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
+        const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
+        setPrefetch({ inFlight: false, plot: storyText, dialogues: padded });
+      } catch (e) {
+        console.warn('Background generation failed', e);
+        setPrefetch(prev => ({ ...prev, inFlight: false }));
+      }
+    })();
+  }, [screen]);
+
+  // When on dialogue screen and prefetch finishes, adopt the prefetched content
+  useEffect(() => {
+    if (screen !== 'dialogue') return;
+    if (storyDialogues && storyDialogues.length > 0) return;
+    if (prefetch.dialogues && prefetch.dialogues.length) {
+      setPlotSummary(prefetch.plot);
+      setStoryDialogues(prefetch.dialogues);
+      setDialogueIndex(0);
+      setEpisodes(prev => {
+        const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
+        return { ...prev, [language]: { ...langData, generatedPlot: prefetch.plot, generatedDialogues: prefetch.dialogues } };
+      });
+    }
+  }, [screen, prefetch.dialogues]);
   const [plotGenerating, setPlotGenerating] = useState(false);
   const [plotTimer, setPlotTimer] = useState(0);
   const [plotState, setPlotState] = useState({ tone: 'neutral', decisions: [] });
-  const [preloadedDialogues, setPreloadedDialogues] = useState(null); // Store dialogues generated during quiz
 
   const tts = useSpeech();
   const animationTimerRef = useRef(null);
@@ -116,7 +153,8 @@ export default function App() {
     };
   }, []);
 
-  // Auto-play TTS for dialogue lines when index changes - REMOVED per user request
+  // Auto-play TTS for dialogue lines when index changes
+  // Voice is disabled on dialogue pages for now (no auto TTS)
   // useEffect(() => {
   //   const dlg = storyDialogues[dialogueIndex];
   //   if (dlg && tts && typeof tts.speak === 'function' && !practiceState) {
@@ -131,52 +169,6 @@ export default function App() {
     return () => clearTimeout(id);
   }, [translatePopup.visible]);
 
-  // Preload dialogues when quiz starts (background generation)
-  useEffect(() => {
-    if (screen !== 'quiz' || preloadedDialogues !== null) return;
-    
-    // Start generating dialogues in the background
-    (async () => {
-      try {
-        const prevPlot = episodes[language]?.generatedPlot || '';
-        const prevPlotState = episodes[language]?.plotState || plotState;
-        const epNum = currentEpisode || 1;
-        
-        // Generate story text
-        const storyText = await remoteGenerateStory({ 
-          lang: language, 
-          genresList: genres, 
-          avatarData: avatar, 
-          buddy: buddyName, 
-          hobbies: avatar.hobbies, 
-          traits: avatar.traits, 
-          episodeNum: epNum, 
-          previousPlot: prevPlot, 
-          plotState: prevPlotState 
-        });
-        
-        // Generate dialogues
-        const dialogues = await remoteGenerateDialogues({ 
-          plot: storyText, 
-          avatarData: avatar, 
-          buddy: buddyName, 
-          lang: language, 
-          vocabPack, 
-          plotState: prevPlotState 
-        });
-        
-        const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
-        
-        // Store preloaded content
-        setPreloadedDialogues({ storyText, dialogues: padded });
-        
-        console.log('Background dialogue generation complete');
-      } catch (e) {
-        console.error('Background generation failed:', e);
-      }
-    })();
-  }, [screen, language, preloadedDialogues]);
-
   function normalizeSpeakerName(name) {
     return (name || '').trim().toLowerCase();
   }
@@ -188,40 +180,27 @@ export default function App() {
   }
 
   function createFallbackChoices(idx, vocabPack) {
-    // Create meaningful choices at key moments (every ~5 lines)
-    // Return null if no choices should be shown
-
-    // Show choices every 5 lines, and only if we have vocab to practice
+    // Create meaningful choices only at strategic moments, incorporating vocabulary when available
+    // Return null if no choices should be shown (most of the time)
+    // Only show choices about every 5 lines, and only if we have vocab to practice
     const shouldShowChoice = idx > 0 && idx % 5 === 0 && vocabPack && vocabPack.length > 0;
     if (!shouldShowChoice) return null;
-
-    // Pick vocab words to practice - use multiple words for variety
-    const vocabIndex = Math.floor(idx / 5) % vocabPack.length;
-    const vocab = vocabPack[vocabIndex];
-    const vocab2 = vocabPack[(vocabIndex + 1) % vocabPack.length];
-
-    if (!vocab) return null;
-
-    // Create 2-3 choices with target-language responses only (no English, no translations)
-    const choices = [
-      {
-        text: `${vocab.word}`,
-        practiceWord: vocab.word,
-        effect: { tone: 'engaged' },
-        nextDelta: 1
-      }
-    ];
-
-    if (vocab2 && vocab2.word !== vocab.word) {
-      choices.push({
-        text: `${vocab2.word}`,
-        practiceWord: vocab2.word,
-        effect: { tone: 'learning' },
-        nextDelta: 1
-      });
-    }
-
-    return choices;
+    // Select up to 3 vocab words to offer as different utterance options (no English translations shown)
+    const baseIndex = Math.floor(idx / 5) % vocabPack.length;
+    const candidates = [
+      vocabPack[baseIndex],
+      vocabPack[(baseIndex + 1) % vocabPack.length],
+      vocabPack[(baseIndex + 2) % vocabPack.length]
+    ].filter(Boolean);
+    if (candidates.length === 0) return null;
+    // Map to choice objects with different internal tones but target-language text only
+    const tones = ['friendly', 'neutral', 'bold'];
+    return candidates.slice(0, 3).map((v, i) => ({
+      text: `Say: "${v.word}"`,
+      practiceWord: v.word,
+      effect: { tone: tones[i % tones.length] },
+      nextDelta: 1
+    }));
   }
 
   function applyChoiceEffect(effect) {
@@ -442,11 +421,11 @@ export default function App() {
   const contextNote = previousPlot ? `\n\nPrevious plot: ${previousPlot}\n\nContinue the story naturally from where it left off, maintaining continuity.` : '';
   const toneHint = ps && ps.tone ? `\n\nTone preference from player choices so far: ${ps.tone}.` : '';
   const decisionsHint = ps && Array.isArray(ps.decisions) && ps.decisions.length ? `\n\nRecent player decisions: ${ps.decisions.slice(-5).map((d,i)=> d?.effect?.tone || 'choice').join(', ')}.` : '';
-  const prompt = `Write a NEW, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}. It must be fresh and reflect the selected genres strongly.
+  const prompt = `Write a SHORT, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}.
 
 Main Character: ${avatarData.name || 'The Traveler'}
 Setting: ${lang}-speaking location
-Genres: ${genresList.join(', ') || 'slice-of-life'} (make these genres clearly influence the events and mood)
+Genres: ${genresList.join(', ') || 'slice-of-life'}
 Personality Traits: ${traits.join(', ') || 'curious'}
 Hobbies: ${hobbies.join(', ') || 'exploring'}
 Local Friend: ${buddy}${contextNote}${toneHint}${decisionsHint}
@@ -487,7 +466,7 @@ Requirements:
       if (!key) throw new Error('No OpenAI key');
       
       const vocabList = vp.map(v => `${v.word} (${v.meaning})`).join(', ');
-  const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
+      const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
 
 Plot: ${plot}
 
@@ -506,28 +485,26 @@ Requirements:
 - Focus on adventure and interaction - NO teaching or explaining words
 - Include moments of discovery, tension, and connection
 - The final line should be poignant and set up the next episode
-- IMPORTANT: Include player choices approximately every 5 dialogue lines at key decision moments
-- When choices appear, offer 2-3 specific responses using vocabulary words from the lesson (target-language only; do NOT include English or translations)
-- Each choice should represent what the character actually says (not just tone), allowing the player to practice vocabulary in context
-- Use EXACT speaker names only from this set: ${avatarData.name}, ${buddy}, and role-based locals like "Vendor", "Elder", "Guide". Do not invent variations like "You", "Protagonist", or "Friend" — use the exact names provided for the main two.
+- Maintain consistent speaker names: protagonist is "${avatarData.name}", friend is "${buddy}". Do NOT use "You". Use named locals for other characters and keep them consistent.
+- Only include CHOICES blocks at important moments, approximately every 5 lines. Choices should be 2-3 options in the TARGET LANGUAGE ONLY (no English translations, no parentheses), using vocabulary words provided when relevant. Do NOT include an option to respond in English.
 
 Format each line as:
 [Character Name]: [Their dialogue]
 
-For choice moments (every ~5 lines), add after the dialogue line:
+For choice moments, add on separate lines:
 CHOICES:
-- "${vp[0]?.word || 'hola'}"
-- "${vp[1]?.word || 'gracias'}"
+- [Option 1 in target language]
+- [Option 2 in target language]
+- [Option 3 in target language] (optional)
 
 Example:
 ${buddy}: ${avatarData.name}, look at this old map I found.
 ${avatarData.name}: It shows a place I've never seen before.
 Local Vendor: That place? Many stories about it.
-${avatarData.name}: What kind of stories?
-Local Vendor: Dark ones. Best to stay away.
+${avatarData.name}: ¿Qué tipo de historias?
 CHOICES:
-- "${vp[0]?.word || 'por favor'}"
-- "${vp[1]?.word || 'gracias'}"`;
+- "Vamos ahora"
+- "Necesito pensar"`;
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -545,22 +522,11 @@ CHOICES:
       
       // Parse the response into dialogue objects
       const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
-      const dialogues = [];
+  const dialogues = [];
       let currentDialogue = null;
       let collectingChoices = false;
       let choicesList = [];
       
-      // Helper to normalize speakers to the exact avatar/buddy names
-      const normalizeSpeakerLabel = (name, aName, bName) => {
-        if (!name) return name;
-        const n = name.trim().toLowerCase();
-        const userAliases = new Set([aName.toLowerCase(), 'you', 'player', 'protagonist']);
-        const buddyAliases = new Set([bName.toLowerCase(), 'buddy', 'friend', 'best friend']);
-        if (userAliases.has(n)) return aName;
-        if (buddyAliases.has(n)) return bName;
-        return name; // keep locals/others as-is
-      };
-
       lines.forEach((line, i) => {
         // Check if this is a CHOICES: marker
         if (line.toUpperCase().includes('CHOICES:')) {
@@ -571,16 +537,23 @@ CHOICES:
         
         // If collecting choices and line starts with - or bullet
         if (collectingChoices && (line.startsWith('-') || line.startsWith('•') || line.startsWith('*'))) {
-          const raw = line.replace(/^[-•*]\s*/, '').trim();
-          // Expect vocabulary-only options, possibly quoted. Strip quotes/parentheses.
-          const cleaned = raw.replace(/^"|^'|"$|'$/g, '').replace(/\s*\([^)]*\)\s*$/g, '').trim();
-          // Match against vocab pack to set practiceWord if present
-          const matchItem = vp.find(v => (v.word || '').toLowerCase() === cleaned.toLowerCase());
-          choicesList.push({
-            text: cleaned,
-            practiceWord: matchItem ? matchItem.word : undefined,
-            nextDelta: 1
-          });
+          const choiceText = line.replace(/^[-•*]\s*/, '').trim();
+          
+          // Parse vocab-based choice: "Say: word" or just text
+          const vocabMatch = choiceText.match(/Say:\s*["']?([^"'(]+)["']?/i);
+          if (vocabMatch) {
+            const word = vocabMatch[1].trim();
+            const vocabItem = vp.find(v => v.word === word);
+            choicesList.push({
+              text: `Say: "${word}"`,
+              practiceWord: word,
+              nextDelta: 1
+            });
+          } else {
+            // Strip any accidental English parentheses/translations
+            const cleaned = choiceText.replace(/\s*\([^)]*\)\s*$/, '').trim();
+            choicesList.push({ text: cleaned, nextDelta: 1 });
+          }
           return;
         }
         
@@ -603,8 +576,11 @@ CHOICES:
         }
         
   let speaker = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
-  speaker = normalizeSpeakerLabel(speaker, avatarData.name, buddy);
         const text = line.slice(colonIdx + 1).trim();
+  // Normalize speaker to avoid 'You' and keep names consistent
+  if (/^you$/i.test(speaker)) speaker = avatarData.name;
+  if (new RegExp(`^${avatarData.name}\s*$`, 'i').test(speaker)) speaker = avatarData.name;
+  if (new RegExp(`^${buddy}\s*$`, 'i').test(speaker)) speaker = buddy;
         
         currentDialogue = {
           speaker,
@@ -643,7 +619,7 @@ CHOICES:
     const locals = ['Vendor', 'Old Friend', 'Mysterious Caller', 'Shop Owner', 'Street Musician', 'Guide', 'Child', 'Elder', 'Tourist', 'Artist'];
     const dialogues = [];
     
-    // Opening sequence (no immediate choice - let story flow first)
+  // Opening sequence (no immediate choice - let story flow first)
     dialogues.push({ speaker: bName, text: `Hey ${aName}, did you see the mural by the harbor? There's a symbol there that looks like your family crest.` });
     dialogues.push({ speaker: aName, text: `I thought I recognized something... I can't read the name on it, but it feels familiar.` });
     
@@ -762,32 +738,21 @@ CHOICES:
       else if (speakerIndex === 1) speaker = aName;
       else speaker = locals[(speakerIndex - 2) % locals.length];
       
-  // Add strategic vocabulary choices every 5 lines at key moments
-  const shouldAddChoice = vp.length > 0 && i > 0 && i % 5 === 0 && i < 90;
-      
+      // Add strategic vocabulary choices every ~5 lines at key moments
+      const shouldAddChoice = vp.length > 0 && i > 0 && i % 5 === 0 && i < 95;
       let choices = null;
       if (shouldAddChoice) {
-        const vocabIndex = Math.floor(i / 5) % vp.length;
-        const vocab1 = vp[vocabIndex];
-        const vocab2 = vp[(vocabIndex + 1) % vp.length];
-        
-        choices = [
-          { 
-            text: `${vocab1.word}`, 
-            practiceWord: vocab1.word, 
-            nextDelta: 1 
-          }
-        ];
-        
-        // Add second vocab option if different
-        if (vocab2 && vocab2.word !== vocab1.word) {
-          choices.push({
-            text: `${vocab2.word}`,
-            practiceWord: vocab2.word,
+        const baseIndex = Math.floor(i / 5) % vp.length;
+        const picks = [vp[baseIndex], vp[(baseIndex + 1) % vp.length], vp[(baseIndex + 2) % vp.length]].filter(Boolean);
+        if (picks.length) {
+          const tones = ['friendly', 'neutral', 'bold'];
+          choices = picks.slice(0, 3).map((v, idx) => ({
+            text: `Say: "${v.word}"`,
+            practiceWord: v.word,
+            effect: { tone: tones[idx % tones.length] },
             nextDelta: 1
-          });
+          }));
         }
-
       }
       
       dialogues.push({
@@ -1390,58 +1355,18 @@ CHOICES:
                 <p style={{ color: 'white', fontSize: '1.5rem', marginBottom: 20 }}>Congratulations! You scored {Math.round(firstTryPct)}%!</p>
                 <button onClick={() => {
                   setShowConfetti(true);
-                  tts.speak('Congratulations!');
-                  setTimeout(() => setShowConfetti(false), 3000);
-                  
-                  // Use preloaded dialogues if available, otherwise generate on demand
-                  (async () => {
-                    let storyText, padded;
-                    
-                    if (preloadedDialogues) {
-                      // Use preloaded content - instant transition
-                      storyText = preloadedDialogues.storyText;
-                      padded = preloadedDialogues.dialogues;
-                      console.log('Using preloaded dialogues');
-                    } else {
-                      // Fallback: generate now if preload didn't complete
-                      console.log('Preload not ready, generating now');
-                      const prevPlot = episodes[language]?.generatedPlot || '';
-                      const prevPlotState = episodes[language]?.plotState || plotState;
-                      const epNum = currentEpisode || 1;
-                      storyText = await remoteGenerateStory({ 
-                        lang: language, 
-                        genresList: genres, 
-                        avatarData: avatar, 
-                        buddy: buddyName, 
-                        hobbies: avatar.hobbies, 
-                        traits: avatar.traits, 
-                        episodeNum: epNum, 
-                        previousPlot: prevPlot, 
-                        plotState: prevPlotState 
-                      });
-                      const dialogues = await remoteGenerateDialogues({ 
-                        plot: storyText, 
-                        avatarData: avatar, 
-                        buddy: buddyName, 
-                        lang: language, 
-                        vocabPack, 
-                        plotState: prevPlotState 
-                      });
-                      padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
-                    }
-                    
-                    setPlotSummary(storyText);
-                    setStoryDialogues(padded);
+                  setTimeout(() => setShowConfetti(false), 1000);
+                  // Move to dialogue immediately; use prefetched content when ready
+                  if (prefetch.dialogues && prefetch.dialogues.length) {
+                    setPlotSummary(prefetch.plot);
+                    setStoryDialogues(prefetch.dialogues);
                     setDialogueIndex(0);
-                    setPreloadedDialogues(null); // Clear preloaded content
-                    
-                    // Persist generated plot+dialogues
                     setEpisodes(prev => {
                       const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
-                      return { ...prev, [language]: { ...langData, generatedPlot: storyText, generatedDialogues: padded } };
+                      return { ...prev, [language]: { ...langData, generatedPlot: prefetch.plot, generatedDialogues: prefetch.dialogues } };
                     });
-                    setScreen('dialogue');
-                  })();
+                  }
+                  setScreen('dialogue');
                 }} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Continue →</button>
               </div>
             )}
@@ -1548,13 +1473,12 @@ CHOICES:
                       <button key={oi} onClick={() => {
                         const correct = oi === practiceState.correctIndex;
                         if (correct) {
-                          tts.speak('Correct');
                           // advance to nextIndex if provided
                           const next = practiceState.nextIndex != null ? practiceState.nextIndex : Math.min(storyDialogues.length - 1, dialogueIndex + 1);
                           setPracticeState(null);
                           setDialogueIndex(next);
                         } else {
-                          tts.speak('Try again');
+                          // Remain on practice until correct, no voice feedback
                         }
                       }} style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#FFF' }}>{opt}</button>
                     ))}
@@ -1563,7 +1487,7 @@ CHOICES:
               )}
             </div>
           ) : (
-            <div style={{ textAlign: 'center', color: '#94A3B8' }}>No dialogues available.</div>
+            <div style={{ textAlign: 'center', color: '#94A3B8' }}>{prefetch.inFlight ? 'Preparing dialogue…' : 'Preparing dialogue…'}</div>
           )}
           {!isLastLine && (
             <div style={{ marginTop: 18, color: '#94A3B8', fontSize: 14, textAlign: 'center' }}>Click anywhere to continue</div>
