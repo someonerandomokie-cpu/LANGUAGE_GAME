@@ -6,8 +6,8 @@ import React, { useEffect, useState, useRef } from 'react';
 const LANGUAGES = ['Spanish','French','Chinese','Russian','Italian','Arabic','Japanese','Korean','Portuguese','German','Hindi','Turkish','Dutch','Swedish','Polish'];
 const AVAILABLE_GENRES = ['Romance', 'Adventure', 'Mystery', 'Comedy', 'Drama', 'Sci-Fi'];
 
-// Country mapping by language for grounded settings
-const COUNTRY_BY_LANGUAGE = {
+// Map language to a representative country and city to ground plots/conflicts
+const LANGUAGE_COUNTRY = {
   Spanish: 'Spain',
   French: 'France',
   Chinese: 'China',
@@ -25,9 +25,26 @@ const COUNTRY_BY_LANGUAGE = {
   Polish: 'Poland'
 };
 
-// Personality and hobbies options (10 each)
-const PERSONALITY_TRAITS = ['Curious', 'Brave', 'Kind', 'Adventurous', 'Calm', 'Funny', 'Creative', 'Persistent', 'Empathetic', 'Resourceful'];
-const HOBBIES = ['Cooking', 'Music', 'Art', 'Travel', 'Reading', 'Sports', 'Photography', 'Gaming', 'Hiking', 'Dancing'];
+const COUNTRY_CITY = {
+  Spain: 'Barcelona',
+  France: 'Paris',
+  China: 'Shanghai',
+  Russia: 'Saint Petersburg',
+  Italy: 'Rome',
+  Morocco: 'Marrakesh',
+  Japan: 'Tokyo',
+  'South Korea': 'Seoul',
+  Portugal: 'Lisbon',
+  Germany: 'Berlin',
+  India: 'Mumbai',
+  Turkey: 'Istanbul',
+  Netherlands: 'Amsterdam',
+  Sweden: 'Stockholm',
+  Poland: 'Kraków'
+};
+// Personality and hobbies options (used on traits screen)
+const PERSONALITY_TRAITS = ['Curious', 'Brave', 'Kind', 'Adventurous', 'Calm', 'Funny', 'Creative', 'Honest', 'Optimistic'];
+const HOBBIES = ['Cooking', 'Music', 'Art', 'Travel', 'Reading', 'Sports', 'Photography', 'Gardening', 'Gaming'];
 
 // Lightweight speech synthesis helper (lesson-only TTS)
 function useSpeech() {
@@ -397,10 +414,11 @@ export default function App() {
     // Use stronger, handcrafted prose mixing in user choices
   const tone = (ps && ps.tone) || 'neutral';
   const toneAdj = tone === 'friendly' ? 'warm' : tone === 'bold' ? 'electric' : 'steady';
-  const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
-  const opening = `On a ${toneAdj} morning in ${country}, ${avatarData.name || 'you'} steps off a rattling tram, pockets full of hope and an old ticket to a life that might be waiting.`;
-    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc in ${country}, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a hidden courtyard, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
-    const conflict = `The city doesn't give up answers easily. Small betrayals, a mysterious figure who remembers your family name, and a spilled map at a midnight mercado force choices that test honesty, courage and the language you're learning.`;
+  const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+  const city = COUNTRY_CITY[country] || 'the capital';
+  const opening = `On a ${toneAdj} morning in ${city}, ${country}, ${avatarData.name || 'you'} step off a rattling tram, the air sweet with street food and possibility.`;
+    const mid = `Drawn into a ${genresList.length ? genresList.join(' and ') : 'quiet'} arc, ${avatarData.name || 'you'} meets ${buddy}, a local with a knack for ${hobbies && hobbies.length ? hobbies[0].toLowerCase() : 'small kindnesses'}. Together they chase a thread: a missing letter, a secret gallery, a late-night recipe, or a constellation of tiny favors that grow into a choice.`;
+    const conflict = `But ${city} doesn't give up answers easily. Small betrayals, a figure who remembers your family name, and a spilled map at a midnight market force choices that test honesty and courage—rooted in the customs of ${country}.`;
     const close = `By the time spring arrives, what started as a lesson in words becomes a lesson in belonging.`;
     // Combine and add unique beats using traits to color characters
     const traitBeat = traits && traits.length ? ` Along the way, ${traits.slice(0,2).join(' and ')} decisions steer moments that feel both intimate and large.` : '';
@@ -429,13 +447,13 @@ export default function App() {
   const contextNote = previousPlot ? `\n\nPrevious plot: ${previousPlot}\n\nContinue the story naturally from where it left off, maintaining continuity.` : '';
   const toneHint = ps && ps.tone ? `\n\nTone preference from player choices so far: ${ps.tone}.` : '';
   const decisionsHint = ps && Array.isArray(ps.decisions) && ps.decisions.length ? `\n\nRecent player decisions: ${ps.decisions.slice(-5).map((d,i)=> d?.effect?.tone || 'choice').join(', ')}.` : '';
-  const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
+  const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+  const city = COUNTRY_CITY[country] || 'the capital';
   const prompt = `Write a SHORT, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}.
 
 Main Character: ${avatarData.name || 'The Traveler'}
-Language: ${lang}
+Setting: ${city}, ${country}
 Country: ${country}
-Setting: A specific place in ${country}
 Genres: ${genresList.join(', ') || 'slice-of-life'}
 Personality Traits: ${traits.join(', ') || 'curious'}
 Hobbies: ${hobbies.join(', ') || 'exploring'}
@@ -445,10 +463,10 @@ Requirements:
 - Start with a HOOK that grabs attention immediately
 - Focus on ${avatarData.name} experiencing adventure and interacting with ${buddy}
 - Include ONE specific conflict or mystery
-- Conflicts, cultural details, and place names must fit ${country}
 - Make it emotional and immersive
 - NO mentions of teaching, lessons, or language learning
 - End with suspense
+- Ground the plot, place names, and cultural details in ${country}; avoid references to other countries
 - MUST be 1 paragraph, 3-4 sentences total`;
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -524,16 +542,15 @@ Requirements:
       if (!key) throw new Error('No OpenAI key');
       
   const vocabList = vp.map(v => `${v.word} (${v.meaning})`).join(', ');
-  const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
-  const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
+  const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+  const city = COUNTRY_CITY[country] || 'the capital';
+      const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
 
 Plot: ${plot}
 
 Main Character: ${avatarData.name}
 Friend: ${buddy}
-Language: ${lang}
-Country: ${country}
-Setting: Specific places in ${country}
+Setting: ${city}, ${country}
 Vocabulary words to naturally use: ${vocabList}
 
 Tone preference from player choices so far: ${ps?.tone || 'neutral'}
@@ -544,10 +561,10 @@ Requirements:
 - Tell the story through conversation - advance the plot with each line
 - Make it feel natural, fun, and emotional
 - Focus on adventure and interaction - NO teaching or explaining words
-- Use culturally and geographically appropriate references for ${country}
 - Include moments of discovery, tension, and connection
 - The final line should be poignant and set up the next episode
 - Maintain consistent speaker names: protagonist is "${avatarData.name}", friend is "${buddy}". Do NOT use "You". Use named locals for other characters and keep them consistent.
+- Ground scenes, references, and cultural details in ${country} (neighborhoods, markets, landmarks)
 - Only include CHOICES blocks at important moments, approximately every 5 lines. Choices should be 2-3 options in the TARGET LANGUAGE ONLY (no English translations, no parentheses), using vocabulary words provided when relevant. Do NOT include an option to respond in English.
 
 Format each line as:
@@ -671,35 +688,6 @@ CHOICES:
     } catch (e) {
       console.warn('Remote dialogue generation failed, using local fallback', e);
       return aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
-    }
-  }
-
-  // Generate lesson vocabulary via AI (backend preferred, fallback to direct OpenAI, else null)
-  async function remoteGenerateVocab({ lang, episodeNum = 1 }) {
-    const backend = import.meta.env.VITE_BACKEND_URL;
-    const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
-    const userPrompt = `Generate a JSON array of 5 vocabulary items for learning ${lang}, episode ${episodeNum}. Start very simple and get slightly harder by item 5, but keep everything beginner-friendly. Focus on practical, high-frequency words or short phrases useful in ${country}. Each item MUST be an object with fields: "word" (in ${lang}), "meaning" (English), "examples" (array with 1-2 very short phrases in ${lang}). Output ONLY valid JSON array.`;
-    try {
-      if (backend) {
-        const r = await fetch(`${backend.replace(/\/$/, '')}/api/vocab`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang, episodeNum, country }) });
-        if (r.ok) {
-          const data = await r.json();
-          if (Array.isArray(data.pack)) return data.pack;
-        }
-      }
-      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
-      if (!key) throw new Error('No OpenAI key');
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: userPrompt }], max_tokens: 500, temperature: 0.7 })
-      });
-      if (!res.ok) throw new Error('LLM vocab call failed');
-      const data = await res.json();
-      const txt = data.choices?.[0]?.message?.content?.trim() || '[]';
-      return JSON.parse(txt);
-    } catch (e) {
-      console.warn('Vocab generation failed', e);
-      return null;
     }
   }
 
@@ -922,8 +910,8 @@ CHOICES:
     setBuddyName(buddy);
     prepareLesson(language, epNum); // Pass episode number for unique vocab
     setScreen('animation');
-  if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
-  animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 5000);
+    if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
+    animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 5000);
   }
   function finishEpisode(epNum) {
     console.log('Finishing episode', epNum, 'in', language);
@@ -948,7 +936,7 @@ CHOICES:
     return name;
   }
 
-  async function prepareLesson(lang, episodeNum = 1) {
+  function prepareLesson(lang, episodeNum = 1) {
     console.log('Preparing lesson for', lang, 'episode', episodeNum);
     const BANK = {
       Spanish: [
@@ -1022,22 +1010,18 @@ CHOICES:
       ]
     };
 
-    // Try AI-generated vocab first for all languages
-    let pack = await remoteGenerateVocab({ lang, episodeNum });
     const pool = BANK[lang] || BANK['Spanish'];
-    if (!pack || pack.length < 5) {
-      // Fallback to local bank (ensures consistent structure if AI is unavailable)
-      const startIdx = ((episodeNum - 1) * 5) % pool.length;
-      pack = [];
-      for (let i = 0; i < 5; i++) {
-        pack.push(pool[(startIdx + i) % pool.length]);
-      }
+    // Select vocab for this specific episode - 5 words starting from episode offset
+    const startIdx = ((episodeNum - 1) * 5) % pool.length;
+    const pack = [];
+    for (let i = 0; i < 5; i++) {
+      pack.push(pool[(startIdx + i) % pool.length]);
     }
-
+    
     setVocabPack(pack);
 
     const q = pack.map((v, idx) => {
-      const distractors = (pool || []).filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
+      const distractors = pool.filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
       const choices = [v.meaning, ...distractors].sort(() => Math.random() - 0.5).map(text => ({ text, correct: text === v.meaning }));
       return { id: `q_${idx}`, prompt: `What does \"${v.word}\" mean?`, choices, userAnswerIndex: null };
     });
