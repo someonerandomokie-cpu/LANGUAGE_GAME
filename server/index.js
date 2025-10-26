@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
 
@@ -13,8 +15,12 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_KEY;
 app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
 app.use(express.json());
 
-// Language -> country mapping for grounded prompts
-const COUNTRY_BY_LANGUAGE = {
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// Language -> Country and City mapping to ground content locally
+const LANGUAGE_COUNTRY = {
   Spanish: 'Spain',
   French: 'France',
   Chinese: 'China',
@@ -31,38 +37,48 @@ const COUNTRY_BY_LANGUAGE = {
   Swedish: 'Sweden',
   Polish: 'Poland'
 };
-
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, ts: Date.now() });
-});
+const COUNTRY_CITY = {
+  Spain: 'Barcelona',
+  France: 'Paris',
+  China: 'Shanghai',
+  Russia: 'Saint Petersburg',
+  Italy: 'Rome',
+  Morocco: 'Marrakesh',
+  Japan: 'Tokyo',
+  'South Korea': 'Seoul',
+  Portugal: 'Lisbon',
+  Germany: 'Berlin',
+  India: 'Mumbai',
+  Turkey: 'Istanbul',
+  Netherlands: 'Amsterdam',
+  Sweden: 'Stockholm',
+  Poland: 'Kraków'
+};
 
 app.post('/api/story', async (req, res) => {
   try {
     if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
     const { lang, genresList = [], avatarData = {}, buddy = 'Buddy', episodeNum = 1, previousPlot = '', plotState = {} } = req.body || {};
-    const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
+    const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+    const city = COUNTRY_CITY[country] || 'the capital';
 
-    const prompt = `Write a SHORT, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}.
+    const contextNote = previousPlot ? `\n\nPrevious episode summary (for continuity): ${previousPlot}` : '';
+    const toneNote = plotState?.tone ? `\n\nPlayer tone preference so far: ${plotState.tone}` : '';
+
+    const prompt = `Write a SHORT plot summary (3-4 sentences MAX) for Episode ${episodeNum}.
 
 Main Character: ${avatarData.name || 'The Traveler'}
-Language: ${lang}
-Country: ${country}
-Setting: A specific place in ${country}
+Friend: ${buddy}
 Genres: ${genresList.join(', ') || 'slice-of-life'}
-Personality Traits: ${(avatarData.traits || []).join(', ') || 'curious'}
-Hobbies: ${(avatarData.hobbies || []).join(', ') || 'exploring'}
-Local Friend: ${buddy}
-Previous plot: ${previousPlot || 'N/A'}
-Tone preference from player choices so far: ${plotState?.tone || 'neutral'}
+Setting: ${city}, ${country}
+Country: ${country}${contextNote}${toneNote}
 
 Requirements:
-- Start with a HOOK that grabs attention immediately
-- Include ONE specific conflict or mystery
-- Conflicts, cultural details, and place names must fit ${country}
-- Make it emotional and immersive
-- NO mentions of teaching, lessons, or language learning
-- End with suspense
-- MUST be 1 paragraph, 3-4 sentences total`;
+- Output in English only
+- Keep it fun and engaging, no language teaching in the narrative
+- Include ONE specific conflict or mystery grounded in ${country}
+- End with a small suspense beat
+- STRICTLY 1 paragraph, 3-4 sentences total`;
 
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -91,42 +107,36 @@ app.post('/api/dialogues', async (req, res) => {
   try {
     if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
     const { plot = '', avatarData = {}, buddy = 'Buddy', lang = 'Spanish', vocabPack = [], plotState = {} } = req.body || {};
-    const country = COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
+    const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+    const city = COUNTRY_CITY[country] || 'the capital';
 
     const vocabList = vocabPack.map(v => `${v.word}`).join(', ');
-    const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
+  const prompt = `Based on this plot, write exactly 100 lines of natural dialogue in ENGLISH that advance the story progressively. You may embed ONLY the learner's target-language vocabulary words in-line when natural, but all other text must remain English.
 
 Plot: ${plot}
-
 Main Character: ${avatarData.name || 'Traveler'}
 Friend: ${buddy}
-Language: ${lang}
-Country: ${country}
-Setting: Specific places in ${country}
-Vocabulary words to naturally use: ${vocabList}
-
-Tone preference from player choices so far: ${plotState?.tone || 'neutral'}
+Setting: ${city}, ${country}
+Vocabulary words (TARGET LANGUAGE, may be embedded as-is): ${vocabList}
+Preferred tone from player choices: ${plotState?.tone || 'neutral'}
 
 Requirements:
-- Exactly 100 dialogue exchanges
-- Alternate between ${avatarData.name}, ${buddy}, and other characters (vendors, locals, strangers)
-- Tell the story through conversation - advance the plot with each line
-- Make it feel natural, fun, and emotional
-- Focus on adventure and interaction - NO teaching or explaining words
-- Use culturally and geographically appropriate references for ${country}
-- Include moments of discovery, tension, and connection
-- The final line should be poignant and set up the next episode
-- Maintain consistent speaker names: protagonist is "${avatarData.name}", friend is "${buddy}". Do NOT use "You". Use named locals for other characters and keep them consistent.
-- Only include CHOICES blocks at important moments, approximately every 5 lines. Choices should be 2-3 options in the TARGET LANGUAGE ONLY (no English translations, no parentheses). Do NOT include an option to respond in English.
+- Dialogue lines must be in English ONLY. The ONLY allowed non-English words are from the provided vocabulary list (embed sparingly and naturally).
+- Exactly 100 dialogue exchanges (do NOT count CHOICES lines as dialogue exchanges)
+- Alternate between ${avatarData.name}, ${buddy}, and consistent local characters
+- No teaching or explaining words; keep it emotional and story-driven
+- Include grounded references to ${country} (neighborhoods, markets, landmarks)
+- The final line should set up the next episode
+- Maintain speaker names (no "You")
+- CHOICES blocks appear only every ~5 lines, 2-3 options
+- CHOICES must be in the format: Say: "<vocab word>" and ONLY use words from the provided vocabulary list
 
-Format each line as:
+Format:
 [Character Name]: [Their dialogue]
-
-For choice moments, add on separate lines:
 CHOICES:
-- [Option 1 in target language]
-- [Option 2 in target language]
-- [Option 3 in target language] (optional)`;
+- Say: "<one of the provided vocab words>"
+- Say: "<one of the provided vocab words>"
+- Say: "<one of the provided vocab words>" (optional)`;
 
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -151,35 +161,151 @@ CHOICES:
   }
 });
 
-// Generate vocabulary pack for lessons (5 items, simple -> slightly harder)
-app.post('/api/vocab', async (req, res) => {
+// Generate context-aware choices for the current situation
+app.post('/api/choices', async (req, res) => {
   try {
     if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
-    const { lang = 'Spanish', episodeNum = 1, country: countryArg } = req.body || {};
-    const country = countryArg || COUNTRY_BY_LANGUAGE[lang] || `${lang}-speaking region`;
-    const prompt = `Generate a JSON array of 5 vocabulary items for learning ${lang}, suitable for episode ${episodeNum}. Start very simple and get slightly harder by item 5, but keep everything beginner-friendly. Focus on practical, high-frequency words or short phrases useful in ${country}. Each item MUST be an object with fields: "word" (in ${lang}), "meaning" (English), "examples" (array with 1-2 very short phrases in ${lang}). Output ONLY valid JSON array.`;
+    const { plot = '', recentDialogues = [], currentLine = {}, lang = 'English', vocabPack = [], plotState = {} } = req.body || {};
+
+    const allowedWords = Array.isArray(vocabPack) ? vocabPack.map(v => v.word).filter(Boolean) : [];
+    const transcript = (Array.isArray(recentDialogues) ? recentDialogues : []).map(d => {
+      const sp = (d && d.speaker) ? d.speaker : 'Unknown';
+      const tx = (d && d.text) ? d.text : '';
+      return `${sp}: ${tx}`;
+    }).join('\n');
+    const lineStr = currentLine && currentLine.speaker ? `${currentLine.speaker}: ${currentLine.text || ''}` : '';
+
+    const prompt = `You help craft interactive, context-aware player choices for a narrative game.
+
+Context:
+Plot (English): ${plot}
+Recent dialogue transcript (latest last):\n${transcript}
+Current line (the most recent message shown to the player): ${lineStr}
+Allowed target-language vocabulary words (if any): ${allowedWords.join(', ') || '(none)'}
+Player tone so far: ${plotState?.tone || 'neutral'}
+
+Rules for output:
+- Return STRICT JSON only with shape: { "choices": [ { "text": "...", "practiceWord": "... or null", "effect": {"tone": "...", "plot": "..."}, "nextDelta": 1 } ] }
+- If an allowed vocabulary word fits naturally, you MAY output up to 3 practice options in the format: text = "Say: \"<word>\"" and set practiceWord to that word. Keep other fields as needed.
+- Otherwise, return 2–3 SHORT English options that make sense in the situation (how the player reacts/speaks). These should influence tone/plot via the effect field.
+- Do NOT output explanations outside JSON. Keep options concise and coherent with the last line and plot.
+`;
 
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
-      body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], max_tokens: 600, temperature: 0.7 })
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 500,
+        temperature: 0.7
+      })
     });
     if (!r.ok) {
       const t = await r.text();
       return res.status(500).json({ error: 'OpenAI call failed', detail: t });
     }
     const data = await r.json();
-    const txt = data?.choices?.[0]?.message?.content?.trim() || '[]';
-    let pack = [];
-    try { pack = JSON.parse(txt); } catch { pack = []; }
-    if (!Array.isArray(pack)) pack = [];
-    res.json({ pack });
+    let txt = data?.choices?.[0]?.message?.content || '';
+    // Extract JSON if fenced
+    const m = txt.match(/```json\s*([\s\S]*?)\s*```/i);
+    if (m) txt = m[1].trim();
+    let parsed;
+    try { parsed = JSON.parse(txt); } catch (e) {
+      const s = txt.indexOf('{'); const eidx = txt.lastIndexOf('}');
+      if (s !== -1 && eidx !== -1) {
+        try { parsed = JSON.parse(txt.slice(s, eidx + 1)); } catch {}
+      }
+    }
+    if (!parsed || !Array.isArray(parsed.choices)) return res.status(500).json({ error: 'Malformed choices JSON', raw: txt });
+    // Limit to 3
+    parsed.choices = parsed.choices.slice(0, 3);
+    return res.json(parsed);
   } catch (e) {
-    console.error('vocab error', e);
+    console.error('choices error', e);
     res.status(500).json({ error: 'server error' });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Language-Game server listening on http://localhost:${PORT}`);
+// Generate lesson content (vocabulary + short phrases) for the selected language
+app.post('/api/lesson', async (req, res) => {
+  try {
+    if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
+    const { lang = 'Spanish', episodeNum = 1 } = req.body || {};
+
+    const prompt = `You are a language tutor. Create a small lesson for learners of ${lang}.
+
+Difficulty: start very simple and gradually get slightly harder by episode number; this is episode ${episodeNum}.
+Return STRICT JSON only, no prose, matching exactly this schema:
+{
+  "words": [
+    { "word": "<target word in ${lang}", "meaning": "<English meaning>", "examples": ["<short example sentence in ${lang}", "<another>"] },
+    ... (exactly 5 items)
+  ],
+  "phrases": [
+    { "phrase": "<short phrase in ${lang}", "meaning": "<English meaning>" },
+    ... (exactly 3 items)
+  ]
+}
+
+Constraints:
+- Choose high-utility, everyday words and phrases
+- Keep example sentences short and natural
+- Do not include any explanations outside the JSON
+- Ensure all target-language text is in ${lang}`;
+
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 800,
+        temperature: 0.7
+      })
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      return res.status(500).json({ error: 'OpenAI call failed', detail: t });
+    }
+    const data = await r.json();
+    const txt = data?.choices?.[0]?.message?.content || '';
+    // Try to parse strict JSON; if wrapped in code fences, extract
+    let jsonText = txt.trim();
+    const fenceMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/i);
+    if (fenceMatch) jsonText = fenceMatch[1].trim();
+    let parsed;
+    try { parsed = JSON.parse(jsonText); } catch {
+      // Attempt to find first JSON object
+      const start = jsonText.indexOf('{');
+      const end = jsonText.lastIndexOf('}');
+      if (start !== -1 && end !== -1) {
+        try { parsed = JSON.parse(jsonText.slice(start, end + 1)); } catch {}
+      }
+    }
+    if (!parsed || !parsed.words) return res.status(500).json({ error: 'Malformed AI lesson payload', raw: txt });
+    res.json(parsed);
+  } catch (e) {
+    console.error('lesson error', e);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Serve built frontend (dist) for production single-host deployment
+try {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const distPath = path.resolve(__dirname, '../dist');
+  app.use(express.static(distPath));
+  // SPA fallback
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+} catch (e) {
+  // ignore if not available (e.g., during dev)
+}
+
+const HOST = process.env.HOST || '0.0.0.0';
+app.listen(PORT, HOST, () => {
+  console.log(`Language-Game server listening on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT}`);
 });

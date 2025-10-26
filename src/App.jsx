@@ -85,6 +85,7 @@ export default function App() {
   // Lesson / Quiz state
   const [buddyName, setBuddyName] = useState('');
   const [vocabPack, setVocabPack] = useState([]);
+  const [lessonPhrases, setLessonPhrases] = useState([]);
   const [quizItems, setQuizItems] = useState([]);
   const [quizResults, setQuizResults] = useState([]); // whether a question has been answered correct (ever)
   const [firstTryResults, setFirstTryResults] = useState([]); // track first-try correctness (true/false/null)
@@ -95,6 +96,9 @@ export default function App() {
   const [practiceState, setPracticeState] = useState(null); // { targetWord, options: [], correctIndex, nextIndex }
   // Prefetch next story/dialogues during quiz to eliminate delay on continue
   const [prefetch, setPrefetch] = useState({ inFlight: false, plot: '', dialogues: [] });
+  // Cache of context-aware choices fetched from server per dialogue index
+  const [contextChoices, setContextChoices] = useState({}); // { [index]: [choices] }
+  const [contextChoicesLoading, setContextChoicesLoading] = useState(false);
 
   // Kick off background generation when entering quiz
   useEffect(() => {
@@ -193,13 +197,24 @@ export default function App() {
     return n && (n === user || n === 'you' || n === 'player' || n === 'protagonist');
   }
 
-  function createFallbackChoices(idx, vocabPack) {
-    // Create meaningful choices only at strategic moments, incorporating vocabulary when available
-    // Return null if no choices should be shown (most of the time)
-    // Only show choices about every 5 lines, and only if we have vocab to practice
-    const shouldShowChoice = idx > 0 && idx % 5 === 0 && vocabPack && vocabPack.length > 0;
+  function createFallbackChoices(idx, vocabPack, userSpeaking) {
+    // Do not show choices on user's speaking turn
+    if (userSpeaking) return null;
+    // Show choices at strategic cadence
+    const shouldShowChoice = idx > 0 && idx % 5 === 0;
     if (!shouldShowChoice) return null;
-    // Select up to 3 vocab words to offer as different utterance options (no English translations shown)
+
+    const hasVocab = Array.isArray(vocabPack) && vocabPack.length > 0;
+    // If learner hasn't learned enough terms yet, provide English narrative choices that affect tone/plot
+    if (!hasVocab || vocabPack.length < 3) {
+      return [
+        { text: 'Respond calmly and ask for more details', effect: { tone: 'calm', plot: 'investigate' }, nextDelta: 1 },
+        { text: 'Refuse and walk away', effect: { tone: 'bold', plot: 'reject' }, nextDelta: 1 },
+        { text: 'Agree enthusiastically', effect: { tone: 'friendly', plot: 'agree' }, nextDelta: 1 }
+      ];
+    }
+
+    // Otherwise, practice with learned vocab (Say: "word")
     const baseIndex = Math.floor(idx / 5) % vocabPack.length;
     const candidates = [
       vocabPack[baseIndex],
@@ -207,7 +222,6 @@ export default function App() {
       vocabPack[(baseIndex + 2) % vocabPack.length]
     ].filter(Boolean);
     if (candidates.length === 0) return null;
-    // Map to choice objects with different internal tones but target-language text only
     const tones = ['friendly', 'neutral', 'bold'];
     return candidates.slice(0, 3).map((v, i) => ({
       text: `Say: "${v.word}"`,
@@ -296,6 +310,50 @@ export default function App() {
   function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
+
+  // Fetch context-aware choices for current line if needed
+  useEffect(() => {
+    if (screen !== 'dialogue') return;
+    const dlg = storyDialogues[dialogueIndex];
+    if (!dlg) return;
+    const userSpeaking = isUserSpeaker(dlg);
+    if (userSpeaking) return; // do not show/generate choices on user's speaking turn
+    // If backend provided choices, no need to fetch
+    if (dlg.choices && dlg.choices.length > 0) return;
+    // Already cached?
+    if (contextChoices[dialogueIndex]) return;
+    // Build recent dialogue slice
+    const start = Math.max(0, dialogueIndex - 5);
+    const recent = storyDialogues.slice(start, dialogueIndex + 1).map(d => ({ speaker: d.speaker, text: d.text }));
+    (async () => {
+      try {
+        setContextChoicesLoading(true);
+        const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+        const r = await fetch(`${backend.replace(/\/$/, '')}/api/choices`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            plot: plotSummary,
+            recentDialogues: recent,
+            currentLine: { speaker: dlg.speaker, text: dlg.text },
+            lang: language,
+            vocabPack,
+            plotState
+          })
+        });
+        if (r.ok) {
+          const data = await r.json();
+          if (Array.isArray(data.choices) && data.choices.length > 0) {
+            setContextChoices(prev => ({ ...prev, [dialogueIndex]: data.choices }));
+          }
+        }
+      } catch (e) {
+        // swallow and let local fallback handle
+      } finally {
+        setContextChoicesLoading(false);
+      }
+    })();
+  }, [screen, dialogueIndex, storyDialogues, vocabPack, plotSummary, language, plotState]);
 
   // ----- Avatar helpers -----
   function handleAppearanceChange(category, option) {
@@ -431,7 +489,7 @@ export default function App() {
   // Optional remote LLM call (OpenAI) — only used if VITE_OPENAI_KEY is set at build/runtime.
   async function remoteGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [], episodeNum = 1, previousPlot = '', plotState: ps = { tone: 'neutral', decisions: [] } }) {
     try {
-      const backend = import.meta.env.VITE_BACKEND_URL;
+      const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
       if (backend) {
         const r = await fetch(`${backend.replace(/\/$/, '')}/api/story`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -441,58 +499,17 @@ export default function App() {
         const data = await r.json();
         return (data.summary || '').trim();
       }
-      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
-      if (!key) throw new Error('No OpenAI key');
-      
-  const contextNote = previousPlot ? `\n\nPrevious plot: ${previousPlot}\n\nContinue the story naturally from where it left off, maintaining continuity.` : '';
-  const toneHint = ps && ps.tone ? `\n\nTone preference from player choices so far: ${ps.tone}.` : '';
-  const decisionsHint = ps && Array.isArray(ps.decisions) && ps.decisions.length ? `\n\nRecent player decisions: ${ps.decisions.slice(-5).map((d,i)=> d?.effect?.tone || 'choice').join(', ')}.` : '';
-  const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
-  const city = COUNTRY_CITY[country] || 'the capital';
-  const prompt = `Write a SHORT, exciting story plot (1 paragraph, 3-4 sentences MAX) for episode ${episodeNum}.
-
-Main Character: ${avatarData.name || 'The Traveler'}
-Setting: ${city}, ${country}
-Country: ${country}
-Genres: ${genresList.join(', ') || 'slice-of-life'}
-Personality Traits: ${traits.join(', ') || 'curious'}
-Hobbies: ${hobbies.join(', ') || 'exploring'}
-Local Friend: ${buddy}${contextNote}${toneHint}${decisionsHint}
-
-Requirements:
-- Start with a HOOK that grabs attention immediately
-- Focus on ${avatarData.name} experiencing adventure and interacting with ${buddy}
-- Include ONE specific conflict or mystery
-- Make it emotional and immersive
-- NO mentions of teaching, lessons, or language learning
-- End with suspense
-- Ground the plot, place names, and cultural details in ${country}; avoid references to other countries
-- MUST be 1 paragraph, 3-4 sentences total`;
-
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ 
-          model: 'gpt-4o-mini', 
-          messages: [{ role: 'user', content: prompt }], 
-          max_tokens: 200,
-          temperature: 0.8
-        })
-      });
-      if (!res.ok) throw new Error('LLM call failed');
-      const data = await res.json();
-      const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || data.choices?.[0]?.text || '';
-      return txt.trim();
+      throw new Error('No backend configured');
     } catch (e) {
-      console.warn('Remote LLM failed, falling back to local generator', e);
-    return aiGenerateStory({ lang, genresList, avatarData, buddy, hobbies, traits, plotState: ps });
+      console.warn('Story generation failed', e);
+      throw e;
     }
   }
 
   // AI-generate dialogues from the plot summary
   async function remoteGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [], plotState: ps = { tone: 'neutral', decisions: [] } }) {
     try {
-      const backend = import.meta.env.VITE_BACKEND_URL;
+      const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
       if (backend) {
         const r = await fetch(`${backend.replace(/\/$/, '')}/api/dialogues`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -536,158 +553,12 @@ Requirements:
         });
         if (currentDialogue) { if (collectingChoices && choicesList.length) currentDialogue.choices = choicesList; dialogues.push(currentDialogue); }
         if (dialogues.length > 0) { dialogues[dialogues.length - 1].isFinalLine = true; dialogues[dialogues.length - 1].setting = 'The moment hangs in the air, charged with possibility.'; }
-        return dialogues.length > 0 ? dialogues : aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
+        return dialogues;
       }
-      const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
-      if (!key) throw new Error('No OpenAI key');
-      
-  const vocabList = vp.map(v => `${v.word} (${v.meaning})`).join(', ');
-  const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
-  const city = COUNTRY_CITY[country] || 'the capital';
-      const prompt = `Based on this story plot, create exactly 100 lines of natural dialogue that tell the story progressively.
-
-Plot: ${plot}
-
-Main Character: ${avatarData.name}
-Friend: ${buddy}
-Setting: ${city}, ${country}
-Vocabulary words to naturally use: ${vocabList}
-
-Tone preference from player choices so far: ${ps?.tone || 'neutral'}
-
-Requirements:
-- Exactly 100 dialogue exchanges
-- Alternate between ${avatarData.name}, ${buddy}, and other characters (vendors, locals, strangers)
-- Tell the story through conversation - advance the plot with each line
-- Make it feel natural, fun, and emotional
-- Focus on adventure and interaction - NO teaching or explaining words
-- Include moments of discovery, tension, and connection
-- The final line should be poignant and set up the next episode
-- Maintain consistent speaker names: protagonist is "${avatarData.name}", friend is "${buddy}". Do NOT use "You". Use named locals for other characters and keep them consistent.
-- Ground scenes, references, and cultural details in ${country} (neighborhoods, markets, landmarks)
-- Only include CHOICES blocks at important moments, approximately every 5 lines. Choices should be 2-3 options in the TARGET LANGUAGE ONLY (no English translations, no parentheses), using vocabulary words provided when relevant. Do NOT include an option to respond in English.
-
-Format each line as:
-[Character Name]: [Their dialogue]
-
-For choice moments, add on separate lines:
-CHOICES:
-- [Option 1 in target language]
-- [Option 2 in target language]
-- [Option 3 in target language] (optional)
-
-Example:
-${buddy}: ${avatarData.name}, look at this old map I found.
-${avatarData.name}: It shows a place I've never seen before.
-Local Vendor: That place? Many stories about it.
-${avatarData.name}: ¿Qué tipo de historias?
-CHOICES:
-- "Vamos ahora"
-- "Necesito pensar"`;
-
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ 
-          model: 'gpt-4o-mini', 
-          messages: [{ role: 'user', content: prompt }], 
-          max_tokens: 4000,
-          temperature: 0.9
-        })
-      });
-      if (!res.ok) throw new Error('LLM dialogue call failed');
-      const data = await res.json();
-      const txt = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
-      
-      // Parse the response into dialogue objects
-      const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
-  const dialogues = [];
-      let currentDialogue = null;
-      let collectingChoices = false;
-      let choicesList = [];
-      
-      lines.forEach((line, i) => {
-        // Check if this is a CHOICES: marker
-        if (line.toUpperCase().includes('CHOICES:')) {
-          collectingChoices = true;
-          choicesList = [];
-          return;
-        }
-        
-        // If collecting choices and line starts with - or bullet
-        if (collectingChoices && (line.startsWith('-') || line.startsWith('•') || line.startsWith('*'))) {
-          const choiceText = line.replace(/^[-•*]\s*/, '').trim();
-          
-          // Parse vocab-based choice: "Say: word" or just text
-          const vocabMatch = choiceText.match(/Say:\s*["']?([^"'(]+)["']?/i);
-          if (vocabMatch) {
-            const word = vocabMatch[1].trim();
-            const vocabItem = vp.find(v => v.word === word);
-            choicesList.push({
-              text: `Say: "${word}"`,
-              practiceWord: word,
-              nextDelta: 1
-            });
-          } else {
-            // Strip any accidental English parentheses/translations
-            const cleaned = choiceText.replace(/\s*\([^)]*\)\s*$/, '').trim();
-            choicesList.push({ text: cleaned, nextDelta: 1 });
-          }
-          return;
-        }
-        
-        // If we were collecting choices and hit a non-choice line, attach choices to previous dialogue
-        if (collectingChoices && !line.startsWith('-') && !line.startsWith('•') && !line.startsWith('*')) {
-          if (currentDialogue && choicesList.length > 0) {
-            currentDialogue.choices = choicesList;
-          }
-          collectingChoices = false;
-          choicesList = [];
-        }
-        
-        // Regular dialogue line
-        const colonIdx = line.indexOf(':');
-        if (colonIdx === -1) return;
-        
-        // Save previous dialogue if exists
-        if (currentDialogue) {
-          dialogues.push(currentDialogue);
-        }
-        
-  let speaker = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
-        const text = line.slice(colonIdx + 1).trim();
-  // Normalize speaker to avoid 'You' and keep names consistent
-  if (/^you$/i.test(speaker)) speaker = avatarData.name;
-  if (new RegExp(`^${avatarData.name}\s*$`, 'i').test(speaker)) speaker = avatarData.name;
-  if (new RegExp(`^${buddy}\s*$`, 'i').test(speaker)) speaker = buddy;
-        
-        currentDialogue = {
-          speaker,
-          text,
-          choices: null,
-          isFinalLine: false,
-          setting: undefined
-        };
-      });
-      
-      // Push final dialogue
-      if (currentDialogue) {
-        if (collectingChoices && choicesList.length > 0) {
-          currentDialogue.choices = choicesList;
-        }
-        dialogues.push(currentDialogue);
-      }
-      
-      // Mark final line
-      if (dialogues.length > 0) {
-        dialogues[dialogues.length - 1].isFinalLine = true;
-        dialogues[dialogues.length - 1].setting = 'The moment hangs in the air, charged with possibility.';
-      }
-      
-      return dialogues.length > 0 ? dialogues : aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
+      throw new Error('No backend configured');
     } catch (e) {
-      console.warn('Remote dialogue generation failed, using local fallback', e);
-      return aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
+      console.warn('Dialogue generation failed', e);
+      throw e;
     }
   }
 
@@ -938,94 +809,34 @@ CHOICES:
 
   function prepareLesson(lang, episodeNum = 1) {
     console.log('Preparing lesson for', lang, 'episode', episodeNum);
-    const BANK = {
-      Spanish: [
-        // Episode 1 basics
-        { word: 'hola', meaning: 'hello', examples: ['Hola, ¿cómo estás?', 'Hola, bienvenido.'], episode: 1 },
-        { word: 'gracias', meaning: 'thank you', examples: ['Gracias por todo.', 'Muchas gracias.'], episode: 1 },
-        { word: 'por favor', meaning: 'please', examples: ['Pásame la sal, por favor.'], episode: 1 },
-        { word: 'sí', meaning: 'yes', examples: ['Sí, claro.'], episode: 1 },
-        { word: 'no', meaning: 'no', examples: ['No, gracias.'], episode: 1 },
-        // Episode 2
-        { word: 'buenos días', meaning: 'good morning', examples: ['Buenos días, ¿cómo dormiste?'], episode: 2 },
-        { word: 'adiós', meaning: 'goodbye', examples: ['Adiós, hasta luego.'], episode: 2 },
-        { word: 'perdón', meaning: 'sorry/excuse me', examples: ['Perdón, no te escuché.'], episode: 2 },
-        { word: '¿cómo estás?', meaning: 'how are you?', examples: ['¿Cómo estás hoy?'], episode: 2 },
-        { word: 'bien', meaning: 'well/good', examples: ['Estoy bien, gracias.'], episode: 2 },
-        // Episode 3+
-        { word: 'la calle', meaning: 'the street', examples: ['Vivo en esta calle.'], episode: 3 },
-        { word: 'el mercado', meaning: 'the market', examples: ['Vamos al mercado.'], episode: 3 },
-        { word: 'agua', meaning: 'water', examples: ['Necesito agua, por favor.'], episode: 3 },
-        { word: 'comida', meaning: 'food', examples: ['La comida está deliciosa.'], episode: 3 },
-        { word: 'ayuda', meaning: 'help', examples: ['¿Me puedes ayudar?'], episode: 3 },
-        { word: 'amigo', meaning: 'friend', examples: ['Él es mi amigo.'], episode: 4 },
-        { word: 'casa', meaning: 'house/home', examples: ['Mi casa está cerca.'], episode: 4 },
-        { word: 'tiempo', meaning: 'time/weather', examples: ['No tengo tiempo.'], episode: 4 },
-        { word: 'dinero', meaning: 'money', examples: ['¿Cuánto dinero cuesta?'], episode: 4 },
-        { word: 'trabajo', meaning: 'work/job', examples: ['Voy al trabajo.'], episode: 4 }
-      ],
-      French: [
-        { word: 'bonjour', meaning: 'hello', examples: ['Bonjour, comment ça va?'], episode: 1 },
-        { word: 'merci', meaning: 'thank you', examples: ['Merci beaucoup.'], episode: 1 },
-        { word: "s'il vous plaît", meaning: 'please', examples: ["S'il vous plaît, donnez-moi ça."], episode: 1 },
-        { word: 'oui', meaning: 'yes', examples: ['Oui, bien sûr.'], episode: 1 },
-        { word: 'non', meaning: 'no', examples: ['Non, merci.'], episode: 1 },
-        { word: 'au revoir', meaning: 'goodbye', examples: ['Au revoir, à bientôt.'], episode: 2 },
-        { word: 'pardon', meaning: 'sorry/excuse me', examples: ['Pardon, excusez-moi.'], episode: 2 },
-        { word: 'comment allez-vous', meaning: 'how are you', examples: ['Comment allez-vous?'], episode: 2 },
-        { word: 'bien', meaning: 'well', examples: ['Je vais bien.'], episode: 2 },
-        { word: 'mal', meaning: 'bad', examples: ['Je me sens mal.'], episode: 2 },
-        { word: 'la rue', meaning: 'the street', examples: ['Cette rue est belle.'], episode: 3 },
-        { word: 'le marché', meaning: 'the market', examples: ['Allons au marché.'], episode: 3 },
-        { word: "l'eau", meaning: 'water', examples: ["J'ai besoin d'eau."], episode: 3 },
-        { word: 'la nourriture', meaning: 'food', examples: ['La nourriture est délicieuse.'], episode: 3 },
-        { word: "l'aide", meaning: 'help', examples: ['Pouvez-vous m\'aider?'], episode: 3 },
-        { word: "l'ami", meaning: 'friend', examples: ['C\'est mon ami.'], episode: 4 },
-        { word: 'la maison', meaning: 'house/home', examples: ['Ma maison est près d\'ici.'], episode: 4 },
-        { word: 'le temps', meaning: 'time/weather', examples: ['Je n\'ai pas le temps.'], episode: 4 },
-        { word: "l'argent", meaning: 'money', examples: ['Combien d\'argent?'], episode: 4 },
-        { word: 'le travail', meaning: 'work/job', examples: ['Je vais au travail.'], episode: 4 }
-      ],
-      Japanese: [
-        { word: 'こんにちは', meaning: 'hello', examples: ['こんにちは、元気ですか？'], episode: 1 },
-        { word: 'ありがとう', meaning: 'thank you', examples: ['ありがとうございます。'], episode: 1 },
-        { word: 'お願いします', meaning: 'please', examples: ['お願いします。'], episode: 1 },
-        { word: 'はい', meaning: 'yes', examples: ['はい、わかりました。'], episode: 1 },
-        { word: 'いいえ', meaning: 'no', examples: ['いいえ、違います。'], episode: 1 },
-        { word: 'さようなら', meaning: 'goodbye', examples: ['さようなら、また会いましょう。'], episode: 2 },
-        { word: 'すみません', meaning: 'excuse me/sorry', examples: ['すみません、わかりません。'], episode: 2 },
-        { word: 'おはよう', meaning: 'good morning', examples: ['おはようございます。'], episode: 2 },
-        { word: 'おやすみ', meaning: 'good night', examples: ['おやすみなさい。'], episode: 2 },
-        { word: '元気', meaning: 'fine/healthy', examples: ['元気です。'], episode: 2 },
-        { word: '道', meaning: 'street/road', examples: ['この道を行ってください。'], episode: 3 },
-        { word: '市場', meaning: 'market', examples: ['市場に行きましょう。'], episode: 3 },
-        { word: '水', meaning: 'water', examples: ['水をください。'], episode: 3 },
-        { word: '食べ物', meaning: 'food', examples: ['食べ物が美味しいです。'], episode: 3 },
-        { word: '助け', meaning: 'help', examples: ['助けてください。'], episode: 3 },
-        { word: '友達', meaning: 'friend', examples: ['彼は私の友達です。'], episode: 4 },
-        { word: '家', meaning: 'house/home', examples: ['私の家は近いです。'], episode: 4 },
-        { word: '時間', meaning: 'time', examples: ['時間がありません。'], episode: 4 },
-        { word: 'お金', meaning: 'money', examples: ['いくらですか？'], episode: 4 },
-        { word: '仕事', meaning: 'work/job', examples: ['仕事に行きます。'], episode: 4 }
-      ]
-    };
-
-    const pool = BANK[lang] || BANK['Spanish'];
-    // Select vocab for this specific episode - 5 words starting from episode offset
-    const startIdx = ((episodeNum - 1) * 5) % pool.length;
-    const pack = [];
-    for (let i = 0; i < 5; i++) {
-      pack.push(pool[(startIdx + i) % pool.length]);
-    }
-    
-    setVocabPack(pack);
-
-    const q = pack.map((v, idx) => {
-      const distractors = pool.filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
-      const choices = [v.meaning, ...distractors].sort(() => Math.random() - 0.5).map(text => ({ text, correct: text === v.meaning }));
-      return { id: `q_${idx}`, prompt: `What does \"${v.word}\" mean?`, choices, userAnswerIndex: null };
-    });
-    setQuizItems(q); setQuizResults(Array(q.length).fill(null)); setFirstTryResults(Array(q.length).fill(null));
+    (async () => {
+      try {
+        const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+        const r = await fetch(`${backend.replace(/\/$/, '')}/api/lesson`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lang, episodeNum })
+        });
+        if (!r.ok) throw new Error('Lesson generation failed');
+        const data = await r.json();
+        const words = Array.isArray(data.words) ? data.words : [];
+        const phrases = Array.isArray(data.phrases) ? data.phrases : [];
+        setVocabPack(words);
+        setLessonPhrases(phrases);
+        const pool = words;
+        const q = words.map((v, idx) => {
+          const distractors = pool.filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
+          const choices = [v.meaning, ...distractors].sort(() => Math.random() - 0.5).map(text => ({ text, correct: text === v.meaning }));
+          return { id: `q_${idx}`, prompt: `What does \"${v.word}\" mean?`, choices, userAnswerIndex: null };
+        });
+        setQuizItems(q);
+        setQuizResults(Array(q.length).fill(null));
+        setFirstTryResults(Array(q.length).fill(null));
+      } catch (e) {
+        console.warn('Lesson generation failed', e);
+        alert('Lesson generation failed. Please try again.');
+      }
+    })();
   }
 
   // ----- Quiz handling -----
@@ -1350,6 +1161,33 @@ CHOICES:
               <ul style={{ marginTop: 8, marginLeft: 18, color: '#333' }}>{v.examples.map((ex,j) => <li key={j}>{ex}</li>)}</ul>
             </div>
           ))}
+          {lessonPhrases && lessonPhrases.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <h3 style={{ color: 'white', marginBottom: 12 }}>Useful phrases</h3>
+              {lessonPhrases.map((p, idx) => (
+                <div key={`${p.phrase}-${idx}`} style={{ padding: 16, borderRadius: 16, background: 'rgba(255,255,255,0.9)', marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ color: '#1a1a1a', fontWeight: 600 }}>
+                    {p.phrase} — <span style={{ fontWeight: 400, color: '#555' }}>{p.meaning}</span>
+                  </div>
+                  <button
+                    onClick={() => tts.speak(p.phrase)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 10,
+                      background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+                      border: 'none',
+                      color: 'white',
+                      cursor: 'pointer',
+                      fontWeight: 700
+                    }}
+                    title="Pronounce this phrase"
+                  >
+                    🔊
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 25 }}>
@@ -1362,7 +1200,8 @@ CHOICES:
   if (screen === 'quiz') {
     // Quiz screen is separate — implements first-try tracking and retake loop
     const firstTryPct = computeFirstTryScore();
-    const passed = firstTryPct >= 80;
+    const allAnswered = firstTryResults.length > 0 && firstTryResults.every(r => r !== null);
+    const passed = allAnswered && firstTryPct >= 80;
 
     return (
       <div style={{ ...styles.container, background: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)' }}>
@@ -1378,7 +1217,8 @@ CHOICES:
         `}</style>
         <button onClick={() => setScreen('home')} style={{ position: 'absolute', left: 20, top: 20, border: 'none', background: 'rgba(255,255,255,0.3)', color: 'white', padding: '10px 15px', borderRadius: 10, backdropFilter: 'blur(10px)', cursor: 'pointer', fontWeight: 600 }}>← Back</button>
         <h2 style={styles.title}>Quiz Time!</h2>
-        <p style={{ color: 'white', fontSize: '1.2rem', marginBottom: 30 }}>Your score: <strong>{firstTryPct}%</strong></p>
+  <p style={{ color: 'white', fontSize: '1.2rem', marginBottom: 30 }}>Your score: <strong>{firstTryPct}%</strong>{!allAnswered && ' (finish all questions)'}
+  </p>
 
         <div style={{ marginTop: 12, width: '100%', maxWidth: 800, animation: 'fadeIn 1s ease-out 0.2s both' }}>
           {quizItems.map((q, qi) => (
@@ -1413,10 +1253,15 @@ CHOICES:
 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginTop: 40, animation: 'fadeIn 1s ease-out 0.4s both' }}>
           {!passed && (
-            // Per your requirement: when the Retake button appears, show the percentage answered correctly right above it.
             <div style={{ textAlign: 'center' }}>
-              <div style={{ marginBottom: 15, color: 'white', fontSize: '1.2rem' }}>You need 80% to continue.</div>
-              <button onClick={retakeQuiz} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Retake Quiz</button>
+              {!allAnswered ? (
+                <div style={{ marginBottom: 15, color: 'white', fontSize: '1.2rem' }}>Answer all questions to see your result.</div>
+              ) : (
+                <div style={{ marginBottom: 15, color: 'white', fontSize: '1.2rem' }}>You need 80% to continue.</div>
+              )}
+              {allAnswered && (
+                <button onClick={retakeQuiz} style={{ padding: '15px 30px', borderRadius: 15, background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', color: 'white', border: 'none', fontSize: '1rem', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s ease', boxShadow: '0 8px 20px rgba(0,0,0,0.2)' }}>Retake Quiz</button>
+              )}
             </div>
           )}
 
@@ -1466,10 +1311,22 @@ CHOICES:
   if (screen === 'dialogue') {
     const dlg = storyDialogues[dialogueIndex] || null;
     const isLastLine = dlg && dlg.isFinalLine;
+    const userSpeaking = dlg ? isUserSpeaker(dlg) : false;
     return (
       <div style={{ ...styles.container, justifyContent: 'center' }} onClick={() => {
         // Advance dialogue on background click only when no choices are present
-        const hasChoices = dlg && dlg.choices && dlg.choices.length > 0;
+        const hasChoices = (() => {
+          if (!dlg) return false;
+          // No visible choices if user is speaking
+          if (userSpeaking) return false;
+          const apiChoices = contextChoices[dialogueIndex];
+          const effectiveChoices = (dlg.choices && dlg.choices.length > 0)
+            ? dlg.choices
+            : (apiChoices && apiChoices.length > 0)
+              ? apiChoices
+              : createFallbackChoices(dialogueIndex, vocabPack, userSpeaking);
+          return contextChoicesLoading || !!(effectiveChoices && effectiveChoices.length);
+        })();
         if (hasChoices) {
           // Do not advance if choices are available - user must select one
           return;
@@ -1507,15 +1364,24 @@ CHOICES:
                   )}
                 </div>
               </div>
-              {/* Interactive choices area (only when choices are explicitly provided) */}
-              {!isLastLine && dlg && dlg.choices && dlg.choices.length > 0 && (
-                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {dlg.choices.map((c, ci) => (
+              {/* Interactive choices area: only when not user speaking */}
+              {!isLastLine && dlg && !userSpeaking && (() => {
+                const apiChoices = contextChoices[dialogueIndex];
+                const effectiveChoices = (dlg.choices && dlg.choices.length > 0)
+                  ? dlg.choices
+                  : (apiChoices && apiChoices.length > 0)
+                    ? apiChoices
+                    : createFallbackChoices(dialogueIndex, vocabPack, userSpeaking);
+                if (!effectiveChoices || effectiveChoices.length === 0) return null;
+                return (
+                  <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {contextChoicesLoading && (
+                      <div style={{ fontSize: 14, color: '#64748B' }}>Loading options…</div>
+                    )}
+                    {effectiveChoices.map((c, ci) => (
                       <button key={ci} onClick={(e) => {
                         e.stopPropagation();
-                        // If it's a practice option, set practiceState
                         if (c.practiceWord) {
-                          // create multiple choice options for practice: correct English meaning + 2 English distractors from vocabPack
                           const targetVocab = (vocabPack || []).find(v => v.word === c.practiceWord);
                           if (!targetVocab) return;
                           const correctMeaning = targetVocab.meaning;
@@ -1523,17 +1389,16 @@ CHOICES:
                           const opts = [correctMeaning, ...distractors].sort(() => Math.random() - 0.5);
                           setPracticeState({ targetWord: c.practiceWord, options: opts, correctIndex: opts.indexOf(correctMeaning), nextIndex: (dialogueIndex + (c.nextDelta || 1)) });
                         } else {
-                          // apply plot effect if present
                           if (c.effect) applyChoiceEffect(c.effect);
-                          // normal choice: just advance nextDelta or 1
                           const delta = c.nextDelta != null ? c.nextDelta : 1;
                           const next = Math.min(storyDialogues.length - 1, dialogueIndex + delta);
                           setDialogueIndex(next);
                         }
                       }} style={{ padding: '10px 12px', borderRadius: 10, background: '#F0F9FF', border: 'none', textAlign: 'left' }}>{c.text}</button>
                     ))}
-                </div>
-              )}
+                  </div>
+                );
+              })()}
               {/* Practice UI */}
               {practiceState && (
                 <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEFCE8' }} onClick={(e) => e.stopPropagation()}>
