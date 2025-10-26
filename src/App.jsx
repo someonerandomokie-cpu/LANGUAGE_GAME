@@ -415,6 +415,16 @@ export default function App() {
   // Optional remote LLM call (OpenAI) — only used if VITE_OPENAI_KEY is set at build/runtime.
   async function remoteGenerateStory({ lang, genresList = [], avatarData, buddy, hobbies = [], traits = [], episodeNum = 1, previousPlot = '', plotState: ps = { tone: 'neutral', decisions: [] } }) {
     try {
+      const backend = import.meta.env.VITE_BACKEND_URL;
+      if (backend) {
+        const r = await fetch(`${backend.replace(/\/$/, '')}/api/story`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lang, genresList, avatarData, buddy, hobbies, traits, episodeNum, previousPlot, plotState: ps })
+        });
+        if (!r.ok) throw new Error('Backend story failed');
+        const data = await r.json();
+        return (data.summary || '').trim();
+      }
       const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
       if (!key) throw new Error('No OpenAI key');
       
@@ -462,6 +472,52 @@ Requirements:
   // AI-generate dialogues from the plot summary
   async function remoteGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [], plotState: ps = { tone: 'neutral', decisions: [] } }) {
     try {
+      const backend = import.meta.env.VITE_BACKEND_URL;
+      if (backend) {
+        const r = await fetch(`${backend.replace(/\/$/, '')}/api/dialogues`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plot, avatarData, buddy, lang, vocabPack: vp, plotState: ps })
+        });
+        if (!r.ok) throw new Error('Backend dialogues failed');
+        const data = await r.json();
+        const txt = data.content || '';
+        // Parse same as below
+        const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
+        const dialogues = [];
+        let currentDialogue = null;
+        let collectingChoices = false;
+        let choicesList = [];
+        lines.forEach((line) => {
+          if (line.toUpperCase().includes('CHOICES:')) { collectingChoices = true; choicesList = []; return; }
+          if (collectingChoices && (line.startsWith('-') || line.startsWith('•') || line.startsWith('*'))) {
+            const choiceText = line.replace(/^[-•*]\s*/, '').trim();
+            const vocabMatch = choiceText.match(/Say:\s*["']?([^"'(]+)["']?/i);
+            if (vocabMatch) {
+              const word = vocabMatch[1].trim();
+              choicesList.push({ text: `Say: "${word}"`, practiceWord: word, nextDelta: 1 });
+            } else {
+              const cleaned = choiceText.replace(/\s*\([^)]*\)\s*$/, '').trim();
+              choicesList.push({ text: cleaned, nextDelta: 1 });
+            }
+            return;
+          }
+          if (collectingChoices && !line.startsWith('-') && !line.startsWith('•') && !line.startsWith('*')) {
+            if (currentDialogue && choicesList.length > 0) currentDialogue.choices = choicesList;
+            collectingChoices = false; choicesList = [];
+          }
+          const colonIdx = line.indexOf(':'); if (colonIdx === -1) return;
+          if (currentDialogue) dialogues.push(currentDialogue);
+          let speaker = line.slice(0, colonIdx).trim().replace(/^\d+\.\s*/, '');
+          const text = line.slice(colonIdx + 1).trim();
+          if (/^you$/i.test(speaker)) speaker = avatarData.name;
+          if (new RegExp(`^${avatarData.name}\s*$`, 'i').test(speaker)) speaker = avatarData.name;
+          if (new RegExp(`^${buddy}\s*$`, 'i').test(speaker)) speaker = buddy;
+          currentDialogue = { speaker, text, choices: null, isFinalLine: false, setting: undefined };
+        });
+        if (currentDialogue) { if (collectingChoices && choicesList.length) currentDialogue.choices = choicesList; dialogues.push(currentDialogue); }
+        if (dialogues.length > 0) { dialogues[dialogues.length - 1].isFinalLine = true; dialogues[dialogues.length - 1].setting = 'The moment hangs in the air, charged with possibility.'; }
+        return dialogues.length > 0 ? dialogues : aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp });
+      }
       const key = import.meta.env.VITE_OPENAI_KEY || process?.env?.VITE_OPENAI_KEY;
       if (!key) throw new Error('No OpenAI key');
       
