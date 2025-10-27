@@ -1050,7 +1050,7 @@ export default function App() {
             <button
               type="button"
               onClick={requestRpmExport}
-              style={{ position: 'absolute', top: 6, right: 18, padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 160, textAlign: 'center' }}
+              style={{ position: 'absolute', top: 6, right: 8, padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 160, textAlign: 'center' }}
               aria-label="Save Avatar"
             >
               {avatar.avatarUrl ? 'Saved ✓' : (rpmSaving ? 'Saving…' : 'Save Avatar')}
