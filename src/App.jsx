@@ -70,8 +70,10 @@ export default function App() {
   const rpmIframeRef = useRef(null);
   const [rpmSaving, setRpmSaving] = useState(false);
   const [rpmSaveError, setRpmSaveError] = useState('');
+  const [rpmFrameReady, setRpmFrameReady] = useState(false);
   const rpmExportRetryRef = useRef(null);
   const rpmExportAttemptsRef = useRef(0);
+  const pendingRpmExportRef = useRef(false);
   const [language, setLanguage] = useState('');
   const [genres, setGenres] = useState([]);
   const [plotSummary, setPlotSummary] = useState('');
@@ -193,20 +195,33 @@ export default function App() {
           // Cancel the 5s fallback timer; we'll switch after the video ends
           if (animationTimerRef.current) { clearTimeout(animationTimerRef.current); animationTimerRef.current = null; }
         } else {
-          setIntroVideoError('Intro video not available.');
+          const reason = (data && (data.reason || data.error)) || 'Intro video not available.';
+          setIntroVideoError(typeof reason === 'string' ? reason : 'Intro video not available.');
         }
       } else {
-        setIntroVideoError('Failed to request intro video.');
+        setIntroVideoError(`Failed to request intro video (status ${r.status}).`);
       }
     } catch (e) {
       console.warn('Intro video generation failed', e);
-      setIntroVideoError('Intro video generation failed.');
+      setIntroVideoError('Intro video generation failed. Is the server running on the correct port?');
     } finally {
       setIntroVideoLoading(false);
     }
   }
 
-  // Trigger Ready Player Me export via Frame API
+  // Subscribe helper
+  function ensureRpmSubscriptions() {
+    try {
+      const iframe = rpmIframeRef.current;
+      const win = iframe && iframe.contentWindow;
+      if (!win) return;
+      win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, '*');
+      win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, '*');
+      // Optionally: win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.*' }, '*');
+    } catch {}
+  }
+
+  // Trigger Ready Player Me export via Frame API (always callable)
   function requestRpmExport() {
     try {
       const iframe = rpmIframeRef.current;
@@ -214,24 +229,12 @@ export default function App() {
       if (!win) return;
       setRpmSaveError('');
       setRpmSaving(true);
-      // Always (re)subscribe before exporting to ensure we capture the event in all states
-      try {
-        // Use '*' to be resilient to any internal sub-origins used by the creator
-        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, '*');
-        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, '*');
-        // Also subscribe broadly to catch variants in different environments
-        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.*' }, '*');
-      } catch {}
-      // Define a robust export attempt with small retries
+      ensureRpmSubscriptions();
       const sendExport = () => {
-        try {
-          win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*');
-        } catch {}
+        try { win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*'); } catch {}
       };
-      // Clear previous loops
       if (rpmExportRetryRef.current) { clearInterval(rpmExportRetryRef.current); rpmExportRetryRef.current = null; }
       rpmExportAttemptsRef.current = 0;
-      // Fire immediately and then retry a few times if needed
       sendExport();
       rpmExportRetryRef.current = setInterval(() => {
         if (avatar.avatarUrl) {
@@ -240,15 +243,15 @@ export default function App() {
           return;
         }
         rpmExportAttemptsRef.current += 1;
-        if (rpmExportAttemptsRef.current > 10) {
+  if (rpmExportAttemptsRef.current > 25) {
           clearInterval(rpmExportRetryRef.current);
           rpmExportRetryRef.current = null;
           setRpmSaving(false);
-          setRpmSaveError('Export timed out. Please try again.');
+          setRpmSaveError('Export timed out. Please press Save again. If it persists, click Next inside the creator once, then Save.');
           return;
         }
         sendExport();
-      }, 1500);
+  }, 400);
     } catch (e) {
       // no-op
     }
@@ -266,6 +269,28 @@ export default function App() {
 
   useEffect(() => {
     console.log('App mounted');
+    // On mount, try to fetch any previously saved avatar for this user
+    (async () => {
+      try {
+        const userId = (avatar && avatar.id) || 'user_001';
+        const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+        const r = await fetch(`${backend.replace(/\/$/, '')}/api/user-avatar?userId=${encodeURIComponent(userId)}`);
+        if (r.ok) {
+          const data = await r.json();
+          if (data && data.avatarUrl) {
+            setAvatar(prev => ({ ...prev, avatarUrl: data.avatarUrl }));
+            return;
+          }
+        }
+        // Fallback to localStorage if backend has none
+        try {
+          const ls = localStorage.getItem('langvoyage_user_avatar_url') || localStorage.getItem('langvoyage_avatar');
+          if (ls) setAvatar(prev => ({ ...prev, avatarUrl: ls }));
+        } catch {}
+      } catch (e) {
+        console.warn('Failed to fetch saved avatar', e);
+      }
+    })();
     return () => {
       console.log('App unmounted');
       if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
@@ -283,22 +308,32 @@ export default function App() {
         // const fromRPM = typeof event.origin === 'string' && /readyplayer\.me$/i.test(new URL(event.origin).hostname || '');
         // When frame is ready, subscribe to exported event
         if (data.type === 'v1.frame.ready') {
-          try {
-            const iframe = rpmIframeRef.current;
-            const win = iframe && iframe.contentWindow;
-            if (win) {
-              win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, '*');
-              win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, '*');
-              // Optional: subscribe to all for debugging
-              // win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.*' }, '*');
-            }
-          } catch {}
+          setRpmFrameReady(true);
+          ensureRpmSubscriptions();
+          if (pendingRpmExportRef.current) {
+            pendingRpmExportRef.current = false;
+            requestRpmExport();
+          }
         }
         // Expected payload: { type: 'v1.avatar.exported', url: 'https://models.readyplayer.me/....glb' }
         if (data.type === 'v1.avatar.exported') {
           const url = data.url || (data.data && data.data.url);
           if (!url) return;
           setAvatar(prev => ({ ...prev, avatarUrl: url }));
+          // Persist to backend so it survives across gameplay
+          (async () => {
+            try {
+              const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+              const userId = (avatar && avatar.id) || 'user_001';
+              await fetch(`${backend.replace(/\/$/, '')}/api/save-avatar`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, avatarUrl: url })
+              });
+            } catch (e) {
+              console.warn('Failed to save avatar to backend', e);
+            }
+          })();
           setRpmSaving(false);
           setRpmSaveError('');
           if (rpmExportRetryRef.current) { clearInterval(rpmExportRetryRef.current); rpmExportRetryRef.current = null; }
@@ -306,17 +341,14 @@ export default function App() {
           setScreen('avatar');
         }
         if (data.type === 'v1.avatar.export.failed') {
-          // Attempt another export quickly
-          try {
-            const iframe = rpmIframeRef.current;
-            const win = iframe && iframe.contentWindow;
-            if (win) {
-              win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*');
-            }
-          } catch {}
-          // Keep saving spinner; show subtle message
-          setRpmSaving(true);
-          setRpmSaveError('Retrying export…');
+          // Immediately retry if currently saving
+          if (rpmSaving) {
+            try {
+              const iframe = rpmIframeRef.current;
+              const win = iframe && iframe.contentWindow;
+              if (win) win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*');
+            } catch {}
+          }
         }
       } catch (e) {
         // ignore
@@ -1045,12 +1077,33 @@ export default function App() {
 
           {/* Embedded 3D Avatar Creator (Ready Player Me) with Save overlay */}
           <div style={{ position: 'relative', width: '100%', maxWidth: 1000, height: '70vh', borderRadius: 16, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.25)', background: 'rgba(0,0,0,0.15)' }}>
-            <iframe ref={rpmIframeRef} title="ReadyPlayerMe Creator" src="https://readyplayer.me/avatar?frameApi" style={{ width: '100%', height: '100%', border: 'none' }} allow="camera; microphone; autoplay; clipboard-write; encrypted-media;" />
+            <iframe
+              ref={rpmIframeRef}
+              title="ReadyPlayerMe Creator"
+              src="https://readyplayer.me/avatar?frameApi"
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              allow="camera; microphone; autoplay; clipboard-write; encrypted-media;"
+              onLoad={() => {
+                try { ensureRpmSubscriptions(); } catch {}
+              }}
+            />
             {/* Overlay Save button to request export from the creator */}
             <button
               type="button"
-              onClick={requestRpmExport}
-              style={{ position: 'absolute', top: 6, right: 8, padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 160, textAlign: 'center' }}
+              onClick={() => {
+                if (!rpmFrameReady) {
+                  pendingRpmExportRef.current = true;
+                  setRpmSaving(true);
+                  ensureRpmSubscriptions();
+                  try {
+                    const win = rpmIframeRef.current && rpmIframeRef.current.contentWindow;
+                    if (win) win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*');
+                  } catch {}
+                } else {
+                  requestRpmExport();
+                }
+              }}
+              style={{ position: 'absolute', top: 6, right: 8, padding: '12px 20px 14px 12px', border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: rpmSaving ? 'wait' : 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 168, textAlign: 'center', borderRadius: '10px 16px 18px 8px' }}
               aria-label="Save Avatar"
             >
               {avatar.avatarUrl ? 'Saved ✓' : (rpmSaving ? 'Saving…' : 'Save Avatar')}
@@ -1061,6 +1114,8 @@ export default function App() {
               </div>
             )}
           </div>
+
+          
 
           <div style={{ marginTop: 18, width: '100%', display: 'flex', justifyContent: 'flex-end' }}>
             <button type="submit" disabled={!avatar.avatarUrl} style={{ ...styles.continueButton, marginTop: 0, opacity: avatar.avatarUrl ? 1 : 0.5, cursor: avatar.avatarUrl ? 'pointer' : 'not-allowed' }}>

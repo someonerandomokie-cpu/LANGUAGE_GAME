@@ -3,6 +3,7 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 // Optional: RunwayML video generation (only used if RUNWAY_API_KEY is set)
 let RunwayML = null;
@@ -23,11 +24,102 @@ const ORIGIN = process.env.ORIGIN || '*';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_KEY;
 const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || process.env.RUNWAYML_API_KEY;
 
-app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
+// CORS: allow same-origin and optional cross-origin usage
+app.use(cors({
+  origin: ORIGIN === '*' ? true : ORIGIN,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false
+}));
+// Ensure preflight succeeds
+app.options('*', cors());
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, ts: Date.now() });
+});
+
+// --- Minimal JSON file store for user avatars ---
+let __filenameDb, __dirnameDb;
+try {
+  __filenameDb = fileURLToPath(import.meta.url);
+  __dirnameDb = path.dirname(__filenameDb);
+} catch {}
+const dataDir = path.resolve(__dirnameDb || '.', 'data');
+const usersDbPath = path.join(dataDir, 'users.json');
+
+function ensureDataStore() {
+  try {
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+    if (!fs.existsSync(usersDbPath)) fs.writeFileSync(usersDbPath, JSON.stringify({ users: {} }, null, 2));
+  } catch (e) {
+    console.warn('Failed to ensure data store', e);
+  }
+}
+
+function readUsersDb() {
+  try {
+    ensureDataStore();
+    const raw = fs.readFileSync(usersDbPath, 'utf-8');
+    const json = JSON.parse(raw || '{}');
+    if (!json.users || typeof json.users !== 'object') return { users: {} };
+    return json;
+  } catch {
+    return { users: {} };
+  }
+}
+
+function writeUsersDb(db) {
+  try {
+    ensureDataStore();
+    fs.writeFileSync(usersDbPath, JSON.stringify(db, null, 2));
+    return true;
+  } catch (e) {
+    console.warn('Failed to write users DB', e);
+    return false;
+  }
+}
+
+// Save avatar URL for a user
+app.post('/api/save-avatar', (req, res) => {
+  try {
+    const { userId, avatarUrl } = req.body || {};
+    if (!userId || !avatarUrl) return res.status(400).json({ error: 'Missing userId or avatarUrl' });
+    // Debug log to confirm saves while running
+    console.log('[save-avatar]', { userId, avatarUrl: String(avatarUrl).slice(0, 80) + (String(avatarUrl).length > 80 ? '…' : '') });
+    const db = readUsersDb();
+    db.users[userId] = { ...(db.users[userId] || {}), avatarUrl, updatedAt: Date.now() };
+    const ok = writeUsersDb(db);
+    if (!ok) return res.status(500).json({ error: 'Failed to persist avatar' });
+    return res.json({ ok: true, userId, avatarUrl });
+  } catch (e) {
+    console.error('save-avatar error', e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Dev-only: dump current users DB (for quick verification during local runs)
+app.get('/api/debug/users', (req, res) => {
+  try {
+    const db = readUsersDb();
+    return res.json(db);
+  } catch (e) {
+    return res.status(500).json({ error: 'failed to read users db' });
+  }
+});
+
+// Fetch avatar URL for a user
+app.get('/api/user-avatar', (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    const db = readUsersDb();
+    const rec = db.users[userId] || null;
+    return res.json({ userId, avatarUrl: rec?.avatarUrl || null, updatedAt: rec?.updatedAt || null });
+  } catch (e) {
+    console.error('user-avatar error', e);
+    return res.status(500).json({ error: 'server error' });
+  }
 });
 
 // Language -> Country and City mapping to ground content locally
@@ -240,6 +332,20 @@ Constraints:
 app.post('/api/intro-video', async (req, res) => {
   try {
     const { lang = 'Spanish', genre = 'Adventure', city = 'Barcelona', plot = '', avatarUrl = '' } = req.body || {};
+
+    // Basic input validation — require both avatarUrl and plot for a meaningful intro
+    if (!avatarUrl || !plot) {
+      return res.status(400).json({ error: 'Missing avatarUrl or plot' });
+    }
+
+    // Debug (sanitized): confirm what we will attempt to send to Runway
+    console.log('[intro-video] request', {
+      lang, genre, city,
+      hasAvatar: Boolean(avatarUrl),
+      plotChars: typeof plot === 'string' ? plot.length : 0,
+      runwayConfigured: Boolean(RUNWAY_API_KEY && RunwayML)
+    });
+
     if (!RUNWAY_API_KEY || !RunwayML) {
       return res.json({ videoUrl: null, reason: 'RUNWAY not configured' });
     }
