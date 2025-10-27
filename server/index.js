@@ -4,13 +4,24 @@ import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+// Optional: RunwayML video generation (only used if RUNWAY_API_KEY is set)
+let RunwayML = null;
+try {
+  // Dynamically import so server can run even if not installed
+  const mod = await import('@runwayml/sdk').catch(() => null);
+  RunwayML = mod && (mod.default || mod.RunwayML) ? (mod.default || mod.RunwayML) : null;
+} catch {}
 
-dotenv.config();
+// Load environment variables from the server folder explicitly
+const __filenameEnv = fileURLToPath(import.meta.url);
+const __dirnameEnv = path.dirname(__filenameEnv);
+dotenv.config({ path: path.resolve(__dirnameEnv, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 8787;
 const ORIGIN = process.env.ORIGIN || '*';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_KEY;
+const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || process.env.RUNWAYML_API_KEY;
 
 app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
 app.use(express.json());
@@ -161,72 +172,6 @@ CHOICES:
   }
 });
 
-// Generate context-aware choices for the current situation
-app.post('/api/choices', async (req, res) => {
-  try {
-    if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
-    const { plot = '', recentDialogues = [], currentLine = {}, lang = 'English', vocabPack = [], plotState = {} } = req.body || {};
-
-    const allowedWords = Array.isArray(vocabPack) ? vocabPack.map(v => v.word).filter(Boolean) : [];
-    const transcript = (Array.isArray(recentDialogues) ? recentDialogues : []).map(d => {
-      const sp = (d && d.speaker) ? d.speaker : 'Unknown';
-      const tx = (d && d.text) ? d.text : '';
-      return `${sp}: ${tx}`;
-    }).join('\n');
-    const lineStr = currentLine && currentLine.speaker ? `${currentLine.speaker}: ${currentLine.text || ''}` : '';
-
-    const prompt = `You help craft interactive, context-aware player choices for a narrative game.
-
-Context:
-Plot (English): ${plot}
-Recent dialogue transcript (latest last):\n${transcript}
-Current line (the most recent message shown to the player): ${lineStr}
-Allowed target-language vocabulary words (if any): ${allowedWords.join(', ') || '(none)'}
-Player tone so far: ${plotState?.tone || 'neutral'}
-
-Rules for output:
-- Return STRICT JSON only with shape: { "choices": [ { "text": "...", "practiceWord": "... or null", "effect": {"tone": "...", "plot": "..."}, "nextDelta": 1 } ] }
-- If an allowed vocabulary word fits naturally, you MAY output up to 3 practice options in the format: text = "Say: \"<word>\"" and set practiceWord to that word. Keep other fields as needed.
-- Otherwise, return 2–3 SHORT English options that make sense in the situation (how the player reacts/speaks). These should influence tone/plot via the effect field.
-- Do NOT output explanations outside JSON. Keep options concise and coherent with the last line and plot.
-`;
-
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 500,
-        temperature: 0.7
-      })
-    });
-    if (!r.ok) {
-      const t = await r.text();
-      return res.status(500).json({ error: 'OpenAI call failed', detail: t });
-    }
-    const data = await r.json();
-    let txt = data?.choices?.[0]?.message?.content || '';
-    // Extract JSON if fenced
-    const m = txt.match(/```json\s*([\s\S]*?)\s*```/i);
-    if (m) txt = m[1].trim();
-    let parsed;
-    try { parsed = JSON.parse(txt); } catch (e) {
-      const s = txt.indexOf('{'); const eidx = txt.lastIndexOf('}');
-      if (s !== -1 && eidx !== -1) {
-        try { parsed = JSON.parse(txt.slice(s, eidx + 1)); } catch {}
-      }
-    }
-    if (!parsed || !Array.isArray(parsed.choices)) return res.status(500).json({ error: 'Malformed choices JSON', raw: txt });
-    // Limit to 3
-    parsed.choices = parsed.choices.slice(0, 3);
-    return res.json(parsed);
-  } catch (e) {
-    console.error('choices error', e);
-    res.status(500).json({ error: 'server error' });
-  }
-});
-
 // Generate lesson content (vocabulary + short phrases) for the selected language
 app.post('/api/lesson', async (req, res) => {
   try {
@@ -288,6 +233,43 @@ Constraints:
   } catch (e) {
     console.error('lesson error', e);
     res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Generate an 8-second intro video using RunwayML (best-effort). Returns { videoUrl } or { videoUrl: null } if not configured.
+app.post('/api/intro-video', async (req, res) => {
+  try {
+    const { lang = 'Spanish', genre = 'Adventure', city = 'Barcelona', plot = '', avatarUrl = '' } = req.body || {};
+    if (!RUNWAY_API_KEY || !RunwayML) {
+      return res.json({ videoUrl: null, reason: 'RUNWAY not configured' });
+    }
+    const client = new RunwayML({ apiKey: RUNWAY_API_KEY });
+    const promptText = `8-second cinematic intro for a ${genre} story set in ${city}. The plot: ${plot}. Focus on locale and mood. The main character is represented by a 3D avatar.`;
+    // Best-effort: Some models accept promptText-only; promptImage optional
+    const task = await client.imageToVideo
+      .create({
+        model: 'gen4_turbo',
+        promptText,
+        ratio: '1280:720',
+        duration: 8,
+        // If SDK accepts avatar3dUrl we pass it; otherwise it's ignored harmlessly
+        characterAnimation: avatarUrl
+          ? {
+              avatar3dUrl: avatarUrl,
+              animations: [
+                { type: 'walk', duration: 3 },
+                { type: 'look_around', duration: 2 },
+                { type: 'wave', duration: 3 }
+              ]
+            }
+          : undefined
+      })
+      .waitForTaskOutput();
+    const url = (task && (task.outputs?.[0]?.url || task.result?.url || task.url)) || null;
+    return res.json({ videoUrl: url });
+  } catch (e) {
+    console.error('intro-video error', e);
+    return res.status(500).json({ error: 'intro video generation failed' });
   }
 });
 

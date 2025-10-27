@@ -67,6 +67,11 @@ function Confetti() {
 
 export default function App() {
   const [avatar, setAvatar] = useState({ id: 'user_001', name: '', appearance: {}, traits: [], hobbies: [], avatarUrl: '' });
+  const rpmIframeRef = useRef(null);
+  const [rpmSaving, setRpmSaving] = useState(false);
+  const [rpmSaveError, setRpmSaveError] = useState('');
+  const rpmExportRetryRef = useRef(null);
+  const rpmExportAttemptsRef = useRef(0);
   const [language, setLanguage] = useState('');
   const [genres, setGenres] = useState([]);
   const [plotSummary, setPlotSummary] = useState('');
@@ -92,13 +97,12 @@ export default function App() {
   const [showConfetti, setShowConfetti] = useState(false);
   const [storyDialogues, setStoryDialogues] = useState([]);
   const [dialogueIndex, setDialogueIndex] = useState(0);
+  const [dialogueLoading, setDialogueLoading] = useState(false);
+  const [dialogueError, setDialogueError] = useState('');
   const [translatePopup, setTranslatePopup] = useState({ visible: false, text: '' });
   const [practiceState, setPracticeState] = useState(null); // { targetWord, options: [], correctIndex, nextIndex }
   // Prefetch next story/dialogues during quiz to eliminate delay on continue
   const [prefetch, setPrefetch] = useState({ inFlight: false, plot: '', dialogues: [] });
-  // Cache of context-aware choices fetched from server per dialogue index
-  const [contextChoices, setContextChoices] = useState({}); // { [index]: [choices] }
-  const [contextChoicesLoading, setContextChoicesLoading] = useState(false);
 
   // Kick off background generation when entering quiz
   useEffect(() => {
@@ -133,11 +137,125 @@ export default function App() {
         const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
         return { ...prev, [language]: { ...langData, generatedPlot: prefetch.plot, generatedDialogues: prefetch.dialogues } };
       });
+      return;
     }
+    // If we reached dialogue screen without prefetched content, fetch on-demand now
+    (async () => {
+      try {
+        setDialogueError('');
+        setDialogueLoading(true);
+        const prevPlotState = episodes[language]?.plotState || plotState;
+        const dlg = await remoteGenerateDialogues({ plot: plotSummary, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
+        const padded = padDialoguesForEpisode(dlg, language, avatar.name, buddyName);
+        setStoryDialogues(padded);
+        setDialogueIndex(0);
+        setEpisodes(prev => {
+          const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
+          return { ...prev, [language]: { ...langData, generatedPlot: plotSummary, generatedDialogues: padded } };
+        });
+      } catch (e) {
+        console.warn('On-demand dialogue generation failed', e);
+        setDialogueError('Failed to load dialogue. Please try again.');
+      } finally {
+        setDialogueLoading(false);
+      }
+    })();
   }, [screen, prefetch.dialogues]);
   const [plotGenerating, setPlotGenerating] = useState(false);
   const [plotTimer, setPlotTimer] = useState(0);
+  const [plotError, setPlotError] = useState('');
   const [plotState, setPlotState] = useState({ tone: 'neutral', decisions: [] });
+  // Intro video state (animation screen)
+  const [introVideoUrl, setIntroVideoUrl] = useState('');
+  const [introVideoLoading, setIntroVideoLoading] = useState(false);
+  const [introVideoError, setIntroVideoError] = useState('');
+
+  // Best-effort intro video request when entering the animation screen
+  async function requestIntroVideo() {
+    if (screen !== 'animation') return;
+    if (introVideoLoading || introVideoUrl) return;
+    if (!avatar?.avatarUrl || !plotSummary) { setIntroVideoError(''); return; }
+    try {
+      setIntroVideoError('');
+      setIntroVideoLoading(true);
+      const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+      const country = LANGUAGE_COUNTRY[language];
+      const city = COUNTRY_CITY[country] || 'the capital';
+      const primaryGenre = (genres && genres[0]) || 'Adventure';
+      const r = await fetch(`${backend.replace(/\/$/, '')}/api/intro-video`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lang: language, genre: primaryGenre, city, plot: plotSummary, avatarUrl: avatar.avatarUrl })
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (data && data.videoUrl) {
+          setIntroVideoUrl(data.videoUrl);
+          // Cancel the 5s fallback timer; we'll switch after the video ends
+          if (animationTimerRef.current) { clearTimeout(animationTimerRef.current); animationTimerRef.current = null; }
+        } else {
+          setIntroVideoError('Intro video not available.');
+        }
+      } else {
+        setIntroVideoError('Failed to request intro video.');
+      }
+    } catch (e) {
+      console.warn('Intro video generation failed', e);
+      setIntroVideoError('Intro video generation failed.');
+    } finally {
+      setIntroVideoLoading(false);
+    }
+  }
+
+  // Trigger Ready Player Me export via Frame API
+  function requestRpmExport() {
+    try {
+      const iframe = rpmIframeRef.current;
+      const win = iframe && iframe.contentWindow;
+      if (!win) return;
+      setRpmSaveError('');
+      setRpmSaving(true);
+      // Always (re)subscribe before exporting to ensure we capture the event in all states
+      try {
+        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, 'https://readyplayer.me');
+        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, 'https://readyplayer.me');
+      } catch {}
+      // Define a robust export attempt with small retries
+      const sendExport = () => {
+        try {
+          win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, 'https://readyplayer.me');
+        } catch {}
+      };
+      // Clear previous loops
+      if (rpmExportRetryRef.current) { clearInterval(rpmExportRetryRef.current); rpmExportRetryRef.current = null; }
+      rpmExportAttemptsRef.current = 0;
+      // Fire immediately and then retry a few times if needed
+      sendExport();
+      rpmExportRetryRef.current = setInterval(() => {
+        if (avatar.avatarUrl) {
+          clearInterval(rpmExportRetryRef.current);
+          rpmExportRetryRef.current = null;
+          return;
+        }
+        rpmExportAttemptsRef.current += 1;
+        if (rpmExportAttemptsRef.current > 5) {
+          clearInterval(rpmExportRetryRef.current);
+          rpmExportRetryRef.current = null;
+          setRpmSaving(false);
+          setRpmSaveError('Export timed out. Please try again.');
+          return;
+        }
+        sendExport();
+      }, 2000);
+    } catch (e) {
+      // no-op
+    }
+  }
+
+  useEffect(() => {
+    if (screen !== 'animation') return;
+    requestIntroVideo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
 
   const tts = useSpeech();
   const animationTimerRef = useRef(null);
@@ -157,11 +275,45 @@ export default function App() {
       try {
         const data = event.data;
         if (!data) return;
+        // Debug: console.log messages for troubleshooting
+        try { if (data && data.type) console.debug('[RPM message]', data.type, data); } catch {}
+        // const fromRPM = typeof event.origin === 'string' && /readyplayer\.me$/i.test(new URL(event.origin).hostname || '');
+        // When frame is ready, subscribe to exported event
+        if (data.type === 'v1.frame.ready') {
+          try {
+            const iframe = rpmIframeRef.current;
+            const win = iframe && iframe.contentWindow;
+            if (win) {
+              win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, '*');
+              win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, '*');
+              // Optional: subscribe to all for debugging
+              // win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.*' }, '*');
+            }
+          } catch {}
+        }
         // Expected payload: { type: 'v1.avatar.exported', url: 'https://models.readyplayer.me/....glb' }
-        if (data.type === 'v1.avatar.exported' && data.url) {
-          setAvatar(prev => ({ ...prev, avatarUrl: data.url }));
+        if (data.type === 'v1.avatar.exported') {
+          const url = data.url || (data.data && data.data.url);
+          if (!url) return;
+          setAvatar(prev => ({ ...prev, avatarUrl: url }));
+          setRpmSaving(false);
+          setRpmSaveError('');
+          if (rpmExportRetryRef.current) { clearInterval(rpmExportRetryRef.current); rpmExportRetryRef.current = null; }
           // Return to avatar screen after export
           setScreen('avatar');
+        }
+        if (data.type === 'v1.avatar.export.failed') {
+          // Attempt another export quickly
+          try {
+            const iframe = rpmIframeRef.current;
+            const win = iframe && iframe.contentWindow;
+            if (win) {
+              win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, 'https://readyplayer.me');
+            }
+          } catch {}
+          // Keep saving spinner; show subtle message
+          setRpmSaving(true);
+          setRpmSaveError('Retrying export…');
         }
       } catch (e) {
         // ignore
@@ -197,24 +349,13 @@ export default function App() {
     return n && (n === user || n === 'you' || n === 'player' || n === 'protagonist');
   }
 
-  function createFallbackChoices(idx, vocabPack, userSpeaking) {
-    // Do not show choices on user's speaking turn
-    if (userSpeaking) return null;
-    // Show choices at strategic cadence
-    const shouldShowChoice = idx > 0 && idx % 5 === 0;
+  function createFallbackChoices(idx, vocabPack) {
+    // Create meaningful choices only at strategic moments, incorporating vocabulary when available
+    // Return null if no choices should be shown (most of the time)
+    // Only show choices about every 5 lines, and only if we have vocab to practice
+    const shouldShowChoice = idx > 0 && idx % 5 === 0 && vocabPack && vocabPack.length > 0;
     if (!shouldShowChoice) return null;
-
-    const hasVocab = Array.isArray(vocabPack) && vocabPack.length > 0;
-    // If learner hasn't learned enough terms yet, provide English narrative choices that affect tone/plot
-    if (!hasVocab || vocabPack.length < 3) {
-      return [
-        { text: 'Respond calmly and ask for more details', effect: { tone: 'calm', plot: 'investigate' }, nextDelta: 1 },
-        { text: 'Refuse and walk away', effect: { tone: 'bold', plot: 'reject' }, nextDelta: 1 },
-        { text: 'Agree enthusiastically', effect: { tone: 'friendly', plot: 'agree' }, nextDelta: 1 }
-      ];
-    }
-
-    // Otherwise, practice with learned vocab (Say: "word")
+    // Select up to 3 vocab words to offer as different utterance options (no English translations shown)
     const baseIndex = Math.floor(idx / 5) % vocabPack.length;
     const candidates = [
       vocabPack[baseIndex],
@@ -222,6 +363,7 @@ export default function App() {
       vocabPack[(baseIndex + 2) % vocabPack.length]
     ].filter(Boolean);
     if (candidates.length === 0) return null;
+    // Map to choice objects with different internal tones but target-language text only
     const tones = ['friendly', 'neutral', 'bold'];
     return candidates.slice(0, 3).map((v, i) => ({
       text: `Say: "${v.word}"`,
@@ -311,50 +453,6 @@ export default function App() {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  // Fetch context-aware choices for current line if needed
-  useEffect(() => {
-    if (screen !== 'dialogue') return;
-    const dlg = storyDialogues[dialogueIndex];
-    if (!dlg) return;
-    const userSpeaking = isUserSpeaker(dlg);
-    if (userSpeaking) return; // do not show/generate choices on user's speaking turn
-    // If backend provided choices, no need to fetch
-    if (dlg.choices && dlg.choices.length > 0) return;
-    // Already cached?
-    if (contextChoices[dialogueIndex]) return;
-    // Build recent dialogue slice
-    const start = Math.max(0, dialogueIndex - 5);
-    const recent = storyDialogues.slice(start, dialogueIndex + 1).map(d => ({ speaker: d.speaker, text: d.text }));
-    (async () => {
-      try {
-        setContextChoicesLoading(true);
-        const backend = import.meta.env.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-        const r = await fetch(`${backend.replace(/\/$/, '')}/api/choices`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            plot: plotSummary,
-            recentDialogues: recent,
-            currentLine: { speaker: dlg.speaker, text: dlg.text },
-            lang: language,
-            vocabPack,
-            plotState
-          })
-        });
-        if (r.ok) {
-          const data = await r.json();
-          if (Array.isArray(data.choices) && data.choices.length > 0) {
-            setContextChoices(prev => ({ ...prev, [dialogueIndex]: data.choices }));
-          }
-        }
-      } catch (e) {
-        // swallow and let local fallback handle
-      } finally {
-        setContextChoicesLoading(false);
-      }
-    })();
-  }, [screen, dialogueIndex, storyDialogues, vocabPack, plotSummary, language, plotState]);
-
   // ----- Avatar helpers -----
   function handleAppearanceChange(category, option) {
     setAvatar(prev => ({ ...prev, appearance: { ...prev.appearance, [category]: option } }));
@@ -370,6 +468,7 @@ export default function App() {
   function handleAvatarSubmit(e) {
     if (e && e.preventDefault) e.preventDefault();
     if (!avatar.name.trim()) return alert('Please enter your avatar name');
+    if (!avatar.avatarUrl) return alert('Please click "Save Avatar" to export your 3D avatar before continuing.');
     console.log('Avatar created:', avatar);
     // If the avatar was opened from editing on the main page, return to main page.
     if (avatarEditMode) {
@@ -495,7 +594,13 @@ export default function App() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ lang, genresList, avatarData, buddy, hobbies, traits, episodeNum, previousPlot, plotState: ps })
         });
-        if (!r.ok) throw new Error('Backend story failed');
+        if (!r.ok) {
+          let detail = '';
+          try { const t = await r.text(); detail = t; } catch {}
+          let msg = 'Backend story failed';
+          try { const j = JSON.parse(detail); msg = j.error || msg; if (j.detail) msg += `: ${j.detail}`; } catch {}
+          throw new Error(msg);
+        }
         const data = await r.json();
         return (data.summary || '').trim();
       }
@@ -739,6 +844,7 @@ export default function App() {
     (async () => {
       setPlotGenerating(true);
       setPlotTimer(3);
+      setPlotError('');
       
       // Start countdown timer from 3 seconds
       const startTime = Date.now();
@@ -748,27 +854,33 @@ export default function App() {
         setPlotTimer(remaining);
       }, 100);
       
-      const prevPlot = episodes[language]?.generatedPlot || '';
-      const epNum = currentEpisode || 1;
-      // Generate or reuse buddy name
-      const buddy = buddyName || generateBuddyName(language);
-      if (!buddyName) setBuddyName(buddy);
-      
-      const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddy, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot });
-      
-      // Stop timer
-      if (plotTimerRef.current) {
-        clearInterval(plotTimerRef.current);
-        plotTimerRef.current = null;
+      try {
+        const prevPlot = episodes[language]?.generatedPlot || '';
+        const prevPlotState = episodes[language]?.plotState || plotState;
+        const epNum = currentEpisode || 1;
+        // Generate or reuse buddy name
+        const buddy = buddyName || generateBuddyName(language);
+        if (!buddyName) setBuddyName(buddy);
+
+        const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddy, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
+
+        setPlotSummary(story);
+        // persist generated plot into episodes (dialogues will be generated later after lesson)
+        setEpisodes(prev => {
+          const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: genres };
+          return { ...prev, [language]: { ...langData, generatedPlot: story } };
+        });
+      } catch (err) {
+        const msg = String(err?.message || err || 'Failed to generate plot');
+        setPlotError(msg.includes('Missing OPENAI_API_KEY') ? 'Server is missing OPENAI_API_KEY. Add it to server/.env and restart.' : msg);
+      } finally {
+        // Stop timer and clear generating flag regardless of success
+        if (plotTimerRef.current) {
+          clearInterval(plotTimerRef.current);
+          plotTimerRef.current = null;
+        }
+        setPlotGenerating(false);
       }
-      
-      setPlotSummary(story);
-      setPlotGenerating(false);
-      // persist generated plot into episodes (dialogues will be generated later after lesson)
-      setEpisodes(prev => {
-        const langData = prev[language] || { unlocked: [1], completed: [], started: false, genres: genres };
-        return { ...prev, [language]: { ...langData, generatedPlot: story } };
-      });
     })();
   }
 
@@ -781,8 +893,11 @@ export default function App() {
     setBuddyName(buddy);
     prepareLesson(language, epNum); // Pass episode number for unique vocab
     setScreen('animation');
+    // Reset intro video state
+    setIntroVideoUrl('');
+    setIntroVideoLoading(false);
+    // Do NOT auto-advance anymore; wait for video to play or user action (Skip)
     if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
-    animationTimerRef.current = setTimeout(() => { console.log('Animation finished — starting lesson'); setScreen('lesson'); }, 5000);
   }
   function finishEpisode(epNum) {
     console.log('Finishing episode', epNum, 'in', language);
@@ -925,21 +1040,29 @@ export default function App() {
         <form onSubmit={handleAvatarSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
           <input value={avatar.name} onChange={(e) => setAvatar(a => ({ ...a, name: e.target.value }))} placeholder="Enter your name" style={styles.input} />
 
-          {/* Embedded 3D Avatar Creator (Ready Player Me) */}
-          <div style={{ width: '100%', maxWidth: 1000, height: '70vh', borderRadius: 16, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.25)', background: 'rgba(0,0,0,0.15)' }}>
-            <iframe title="ReadyPlayerMe Creator" src="https://readyplayer.me/avatar?frameApi" style={{ width: '100%', height: '100%', border: 'none' }} allow="camera; microphone; autoplay; clipboard-write; encrypted-media;" />
-          </div>
-
-          {/* Status + actions */}
-          <div style={{ width: '100%', maxWidth: 1000, display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-            <div style={{ color: 'white', opacity: 0.9 }}>{avatar.avatarUrl ? '3D Avatar saved ✓' : 'Export in the creator to save your 3D avatar.'}</div>
-            {avatar.avatarUrl && (
-              <a href={avatar.avatarUrl} target="_blank" rel="noreferrer" style={{ padding: '10px 14px', borderRadius: 12, border: 'none', background: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: 600, cursor: 'pointer', textDecoration: 'none' }}>Preview 3D</a>
+          {/* Embedded 3D Avatar Creator (Ready Player Me) with Save overlay */}
+          <div style={{ position: 'relative', width: '100%', maxWidth: 1000, height: '70vh', borderRadius: 16, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.25)', background: 'rgba(0,0,0,0.15)' }}>
+            <iframe ref={rpmIframeRef} title="ReadyPlayerMe Creator" src="https://readyplayer.me/avatar?frameApi" style={{ width: '100%', height: '100%', border: 'none' }} allow="camera; microphone; autoplay; clipboard-write; encrypted-media;" />
+            {/* Overlay Save button to request export from the creator */}
+            <button
+              type="button"
+              onClick={requestRpmExport}
+              style={{ position: 'absolute', top: 6, right: 12, padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 160, textAlign: 'center' }}
+              aria-label="Save Avatar"
+            >
+              {avatar.avatarUrl ? 'Saved ✓' : (rpmSaving ? 'Saving…' : 'Save Avatar')}
+            </button>
+            {rpmSaveError && (
+              <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', bottom: 66, color: '#FFE082', background: 'rgba(0,0,0,0.4)', padding: '8px 12px', borderRadius: 10, zIndex: 1000, maxWidth: 560, textAlign: 'center' }}>
+                {rpmSaveError}
+              </div>
             )}
           </div>
 
           <div style={{ marginTop: 18, width: '100%', display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="submit" style={{ ...styles.continueButton, marginTop: 0 }}>Continue →</button>
+            <button type="submit" disabled={!avatar.avatarUrl} style={{ ...styles.continueButton, marginTop: 0, opacity: avatar.avatarUrl ? 1 : 0.5, cursor: avatar.avatarUrl ? 'pointer' : 'not-allowed' }}>
+              Continue →
+            </button>
           </div>
         </form>
       </div>
@@ -1057,6 +1180,11 @@ export default function App() {
     return (
       <div style={styles.container}>
         <h1 style={styles.title}>Plot summary</h1>
+        {plotError && (
+          <div style={{ color: '#FFE082', background: 'rgba(0,0,0,0.2)', padding: 10, borderRadius: 10, marginBottom: 10 }}>
+            {plotError}
+          </div>
+        )}
         {plotGenerating && (
           <p style={{ color: 'white', fontSize: '1.1rem', marginBottom: 20 }}>
             Your story will be generated in <strong>{plotTimer}</strong> seconds...
@@ -1065,7 +1193,7 @@ export default function App() {
         {!plotGenerating && plotSummary && <p style={styles.summaryText}>{plotSummary}</p>}
         {!plotGenerating && !plotSummary && <p style={{ color: 'white', fontSize: '1.1rem', marginBottom: 20 }}>Generating your story...</p>}
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <button onClick={acceptPlot} disabled={plotGenerating} style={{ ...styles.continueButton, background: 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)', opacity: plotGenerating ? 0.5 : 1, cursor: plotGenerating ? 'not-allowed' : 'pointer' }}>Continue to Story</button>
+          <button onClick={acceptPlot} disabled={plotGenerating || !plotSummary} style={{ ...styles.continueButton, background: 'linear-gradient(135deg, #4CAF50 0%, #45a049 100%)', opacity: (plotGenerating || !plotSummary) ? 0.5 : 1, cursor: (plotGenerating || !plotSummary) ? 'not-allowed' : 'pointer' }}>Continue to Story</button>
           <button onClick={handleGenerateNewStory} disabled={plotGenerating} style={{ ...styles.continueButton, background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', opacity: plotGenerating ? 0.5 : 1, cursor: plotGenerating ? 'not-allowed' : 'pointer' }}>Generate a New Story</button>
         </div>
       </div>
@@ -1121,6 +1249,33 @@ export default function App() {
       <div style={styles.container}>
         <button onClick={() => setScreen('home')} style={{ position: 'absolute', left: 20, top: 20, border: 'none', background: 'transparent', color: '#1E88E5' }}>← Back to Main Page</button>
         <h2 style={styles.title}>Episode {currentEpisode}</h2>
+        {introVideoUrl ? (
+          <div style={{ width: '100%', maxWidth: 960, borderRadius: 16, overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.25)' }}>
+            <video
+              key={introVideoUrl}
+              src={introVideoUrl}
+              style={{ width: '100%', height: 'auto', background: 'black' }}
+              autoPlay
+              muted
+              playsInline
+              onPlay={() => { if (animationTimerRef.current) { clearTimeout(animationTimerRef.current); animationTimerRef.current = null; } }}
+              onEnded={() => { setScreen('lesson'); }}
+            />
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+            <p style={{ color: 'white', opacity: 0.9 }}>
+              {introVideoLoading ? 'Generating intro video…' : 'Preparing your episode…'}
+            </p>
+            {introVideoError && !introVideoLoading && (
+              <>
+                <div style={{ color: '#FFE082' }}>{introVideoError}</div>
+                <button onClick={() => requestIntroVideo()} style={{ padding: '10px 16px', borderRadius: 12, border: 'none', background: 'rgba(255,255,255,0.2)', color: 'white', fontWeight: 600, cursor: 'pointer' }}>Retry video</button>
+              </>
+            )}
+            <button onClick={() => { if (animationTimerRef.current) { clearTimeout(animationTimerRef.current); animationTimerRef.current = null; } setScreen('lesson'); }} style={{ padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 700, cursor: 'pointer' }}>Skip video →</button>
+          </div>
+        )}
       </div>
     );
   }
@@ -1311,22 +1466,10 @@ export default function App() {
   if (screen === 'dialogue') {
     const dlg = storyDialogues[dialogueIndex] || null;
     const isLastLine = dlg && dlg.isFinalLine;
-    const userSpeaking = dlg ? isUserSpeaker(dlg) : false;
     return (
       <div style={{ ...styles.container, justifyContent: 'center' }} onClick={() => {
         // Advance dialogue on background click only when no choices are present
-        const hasChoices = (() => {
-          if (!dlg) return false;
-          // No visible choices if user is speaking
-          if (userSpeaking) return false;
-          const apiChoices = contextChoices[dialogueIndex];
-          const effectiveChoices = (dlg.choices && dlg.choices.length > 0)
-            ? dlg.choices
-            : (apiChoices && apiChoices.length > 0)
-              ? apiChoices
-              : createFallbackChoices(dialogueIndex, vocabPack, userSpeaking);
-          return contextChoicesLoading || !!(effectiveChoices && effectiveChoices.length);
-        })();
+        const hasChoices = dlg && dlg.choices && dlg.choices.length > 0;
         if (hasChoices) {
           // Do not advance if choices are available - user must select one
           return;
@@ -1364,24 +1507,15 @@ export default function App() {
                   )}
                 </div>
               </div>
-              {/* Interactive choices area: only when not user speaking */}
-              {!isLastLine && dlg && !userSpeaking && (() => {
-                const apiChoices = contextChoices[dialogueIndex];
-                const effectiveChoices = (dlg.choices && dlg.choices.length > 0)
-                  ? dlg.choices
-                  : (apiChoices && apiChoices.length > 0)
-                    ? apiChoices
-                    : createFallbackChoices(dialogueIndex, vocabPack, userSpeaking);
-                if (!effectiveChoices || effectiveChoices.length === 0) return null;
-                return (
-                  <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {contextChoicesLoading && (
-                      <div style={{ fontSize: 14, color: '#64748B' }}>Loading options…</div>
-                    )}
-                    {effectiveChoices.map((c, ci) => (
+              {/* Interactive choices area (only when choices are explicitly provided) */}
+              {!isLastLine && dlg && dlg.choices && dlg.choices.length > 0 && (
+                <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {dlg.choices.map((c, ci) => (
                       <button key={ci} onClick={(e) => {
                         e.stopPropagation();
+                        // If it's a practice option, set practiceState
                         if (c.practiceWord) {
+                          // create multiple choice options for practice: correct English meaning + 2 English distractors from vocabPack
                           const targetVocab = (vocabPack || []).find(v => v.word === c.practiceWord);
                           if (!targetVocab) return;
                           const correctMeaning = targetVocab.meaning;
@@ -1389,16 +1523,17 @@ export default function App() {
                           const opts = [correctMeaning, ...distractors].sort(() => Math.random() - 0.5);
                           setPracticeState({ targetWord: c.practiceWord, options: opts, correctIndex: opts.indexOf(correctMeaning), nextIndex: (dialogueIndex + (c.nextDelta || 1)) });
                         } else {
+                          // apply plot effect if present
                           if (c.effect) applyChoiceEffect(c.effect);
+                          // normal choice: just advance nextDelta or 1
                           const delta = c.nextDelta != null ? c.nextDelta : 1;
                           const next = Math.min(storyDialogues.length - 1, dialogueIndex + delta);
                           setDialogueIndex(next);
                         }
                       }} style={{ padding: '10px 12px', borderRadius: 10, background: '#F0F9FF', border: 'none', textAlign: 'left' }}>{c.text}</button>
                     ))}
-                  </div>
-                );
-              })()}
+                </div>
+              )}
               {/* Practice UI */}
               {practiceState && (
                 <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEFCE8' }} onClick={(e) => e.stopPropagation()}>
@@ -1422,7 +1557,14 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div style={{ textAlign: 'center', color: '#94A3B8' }}>{prefetch.inFlight ? 'Preparing dialogue…' : 'Preparing dialogue…'}</div>
+            <div style={{ textAlign: 'center', color: '#94A3B8' }}>
+              {dialogueLoading ? 'Loading dialogue…' : (dialogueError || (prefetch.inFlight ? 'Preparing dialogue…' : 'Preparing dialogue…'))}
+              {!dialogueLoading && dialogueError && (
+                <div style={{ marginTop: 12 }}>
+                  <button onClick={(e) => { e.stopPropagation(); setScreen('dialogue'); }} style={{ padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', color: 'white', fontWeight: 700, cursor: 'pointer' }}>Retry</button>
+                </div>
+              )}
+            </div>
           )}
           {!isLastLine && (
             <div style={{ marginTop: 18, color: '#94A3B8', fontSize: 14, textAlign: 'center' }}>Click anywhere to continue</div>
