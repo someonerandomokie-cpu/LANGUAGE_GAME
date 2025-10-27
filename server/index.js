@@ -24,15 +24,7 @@ const ORIGIN = process.env.ORIGIN || '*';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_KEY;
 const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || process.env.RUNWAYML_API_KEY;
 
-// CORS: allow same-origin and optional cross-origin usage
-app.use(cors({
-  origin: ORIGIN === '*' ? true : ORIGIN,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false
-}));
-// Ensure preflight succeeds
-app.options('*', cors());
+app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
@@ -85,8 +77,6 @@ app.post('/api/save-avatar', (req, res) => {
   try {
     const { userId, avatarUrl } = req.body || {};
     if (!userId || !avatarUrl) return res.status(400).json({ error: 'Missing userId or avatarUrl' });
-    // Debug log to confirm saves while running
-    console.log('[save-avatar]', { userId, avatarUrl: String(avatarUrl).slice(0, 80) + (String(avatarUrl).length > 80 ? '…' : '') });
     const db = readUsersDb();
     db.users[userId] = { ...(db.users[userId] || {}), avatarUrl, updatedAt: Date.now() };
     const ok = writeUsersDb(db);
@@ -95,16 +85,6 @@ app.post('/api/save-avatar', (req, res) => {
   } catch (e) {
     console.error('save-avatar error', e);
     return res.status(500).json({ error: 'server error' });
-  }
-});
-
-// Dev-only: dump current users DB (for quick verification during local runs)
-app.get('/api/debug/users', (req, res) => {
-  try {
-    const db = readUsersDb();
-    return res.json(db);
-  } catch (e) {
-    return res.status(500).json({ error: 'failed to read users db' });
   }
 });
 
@@ -332,47 +312,82 @@ Constraints:
 app.post('/api/intro-video', async (req, res) => {
   try {
     const { lang = 'Spanish', genre = 'Adventure', city = 'Barcelona', plot = '', avatarUrl = '' } = req.body || {};
-
-    // Basic input validation — require both avatarUrl and plot for a meaningful intro
-    if (!avatarUrl || !plot) {
-      return res.status(400).json({ error: 'Missing avatarUrl or plot' });
-    }
-
-    // Debug (sanitized): confirm what we will attempt to send to Runway
-    console.log('[intro-video] request', {
-      lang, genre, city,
-      hasAvatar: Boolean(avatarUrl),
-      plotChars: typeof plot === 'string' ? plot.length : 0,
-      runwayConfigured: Boolean(RUNWAY_API_KEY && RunwayML)
-    });
-
-    if (!RUNWAY_API_KEY || !RunwayML) {
+    if (!RUNWAY_API_KEY) {
       return res.json({ videoUrl: null, reason: 'RUNWAY not configured' });
     }
-    const client = new RunwayML({ apiKey: RUNWAY_API_KEY });
-    const promptText = `8-second cinematic intro for a ${genre} story set in ${city}. The plot: ${plot}. Focus on locale and mood. The main character is represented by a 3D avatar.`;
-    // Best-effort: Some models accept promptText-only; promptImage optional
-    const task = await client.imageToVideo
-      .create({
-        model: 'gen4_turbo',
-        promptText,
-        ratio: '1280:720',
-        duration: 8,
-        // If SDK accepts avatar3dUrl we pass it; otherwise it's ignored harmlessly
-        characterAnimation: avatarUrl
-          ? {
-              avatar3dUrl: avatarUrl,
-              animations: [
-                { type: 'walk', duration: 3 },
-                { type: 'look_around', duration: 2 },
-                { type: 'wave', duration: 3 }
-              ]
-            }
-          : undefined
-      })
-      .waitForTaskOutput();
-    const url = (task && (task.outputs?.[0]?.url || task.result?.url || task.url)) || null;
-    return res.json({ videoUrl: url });
+
+    // Build a prompt that explicitly uses BOTH the plot and the user's avatar
+    const promptText = [
+      `Cinematic 8-second intro for a ${genre} story set in ${city}.`,
+      `Plot summary: ${plot}`,
+      avatarUrl ? `The main character should clearly resemble the avatar from this model URL: ${avatarUrl}.` : 'Focus on a single protagonist. ',
+      'Show local mood and location establishing shots; no text overlays; cohesive, filmic look.'
+    ].join(' ');
+
+    // Prefer text-to-video when available; fall back to image-to-video with prompt-only
+    if (RunwayML) {
+      try {
+        const client = new RunwayML({ apiKey: RUNWAY_API_KEY });
+        let task = null;
+        if (client?.textToVideo?.create) {
+          task = await client.textToVideo
+            .create({ model: 'gen4_turbo', promptText, ratio: '1280:720', duration: 8 })
+            .waitForTaskOutput();
+        } else if (client?.imageToVideo?.create) {
+          task = await client.imageToVideo
+            .create({ model: 'gen4_turbo', promptText, ratio: '1280:720', duration: 8 })
+            .waitForTaskOutput();
+        }
+        const url = (task && (task.outputs?.[0]?.url || task.result?.url || task.url)) || null;
+        return res.json({ videoUrl: url });
+      } catch (sdkErr) {
+        console.warn('Runway SDK failed; falling back to REST', sdkErr?.message || sdkErr);
+      }
+    }
+
+    // REST fallback (best-effort): submit a generation task via Runway API
+    try {
+      const createResp = await fetch('https://api.runwayml.com/v1/videos', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${RUNWAY_API_KEY}`
+        },
+        body: JSON.stringify({ model: 'gen4_turbo', promptText, ratio: '1280:720', duration: 8 })
+      });
+      if (!createResp.ok) {
+        const detail = await createResp.text().catch(() => '');
+        return res.status(502).json({ error: 'Runway create failed', detail });
+      }
+      const createData = await createResp.json();
+      const id = createData?.id || createData?.task_id || createData?.taskId;
+      if (!id) return res.status(502).json({ error: 'Runway create returned no id' });
+
+      // Poll for completion up to ~20s
+      let attempts = 0;
+      let videoUrl = null;
+      while (attempts < 10) {
+        await new Promise(r => setTimeout(r, 2000));
+        attempts++;
+        const statusResp = await fetch(`https://api.runwayml.com/v1/videos/${id}`, {
+          headers: { Authorization: `Bearer ${RUNWAY_API_KEY}` }
+        });
+        if (!statusResp.ok) continue;
+        const statusData = await statusResp.json();
+        const st = statusData?.status || statusData?.state || '';
+        if (/complete|succeed/i.test(st)) {
+          videoUrl = statusData?.outputs?.[0]?.url || statusData?.result?.url || statusData?.url || null;
+          break;
+        }
+        if (/failed|error/i.test(st)) {
+          break;
+        }
+      }
+      return res.json({ videoUrl });
+    } catch (restErr) {
+      console.warn('Runway REST failed', restErr?.message || restErr);
+      return res.status(500).json({ error: 'intro video generation failed (Runway REST)' });
+    }
   } catch (e) {
     console.error('intro-video error', e);
     return res.status(500).json({ error: 'intro video generation failed' });
