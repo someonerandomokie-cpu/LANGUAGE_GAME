@@ -216,13 +216,16 @@ export default function App() {
       setRpmSaving(true);
       // Always (re)subscribe before exporting to ensure we capture the event in all states
       try {
-        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, 'https://readyplayer.me');
-        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, 'https://readyplayer.me');
+        // Use '*' to be resilient to any internal sub-origins used by the creator
+        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.exported' }, '*');
+        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.avatar.export.failed' }, '*');
+        // Also subscribe broadly to catch variants in different environments
+        win.postMessage({ target: 'readyplayerme', type: 'subscribe', eventName: 'v1.*' }, '*');
       } catch {}
       // Define a robust export attempt with small retries
       const sendExport = () => {
         try {
-          win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, 'https://readyplayer.me');
+          win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*');
         } catch {}
       };
       // Clear previous loops
@@ -237,7 +240,7 @@ export default function App() {
           return;
         }
         rpmExportAttemptsRef.current += 1;
-        if (rpmExportAttemptsRef.current > 5) {
+        if (rpmExportAttemptsRef.current > 10) {
           clearInterval(rpmExportRetryRef.current);
           rpmExportRetryRef.current = null;
           setRpmSaving(false);
@@ -245,7 +248,7 @@ export default function App() {
           return;
         }
         sendExport();
-      }, 2000);
+      }, 1500);
     } catch (e) {
       // no-op
     }
@@ -308,7 +311,7 @@ export default function App() {
             const iframe = rpmIframeRef.current;
             const win = iframe && iframe.contentWindow;
             if (win) {
-              win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, 'https://readyplayer.me');
+              win.postMessage({ target: 'readyplayerme', type: 'v1.avatar.export' }, '*');
             }
           } catch {}
           // Keep saving spinner; show subtle message
@@ -1047,7 +1050,7 @@ export default function App() {
             <button
               type="button"
               onClick={requestRpmExport}
-              style={{ position: 'absolute', top: 6, right: 12, padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 160, textAlign: 'center' }}
+              style={{ position: 'absolute', top: 6, right: 18, padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', color: 'white', fontWeight: 800, cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 1000, minWidth: 160, textAlign: 'center' }}
               aria-label="Save Avatar"
             >
               {avatar.avatarUrl ? 'Saved ✓' : (rpmSaving ? 'Saving…' : 'Save Avatar')}
