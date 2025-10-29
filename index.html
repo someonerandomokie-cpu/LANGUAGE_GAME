@@ -1,12 +1,54 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Language Game - Dev</title>
+    <!-- Speed up Ready Player Me iframe by warming up connections -->
+    <link rel="dns-prefetch" href="//readyplayer.me" />
+    <link rel="preconnect" href="https://readyplayer.me" crossorigin />
+    <link rel="dns-prefetch" href="//models.readyplayer.me" />
+    <link rel="preconnect" href="https://models.readyplayer.me" crossorigin />
+    <link rel="dns-prefetch" href="//cdn.readyplayer.me" />
+    <link rel="preconnect" href="https://cdn.readyplayer.me" crossorigin />
   </head>
   <body>
+    <!-- Boot/status overlay: prevents silent white screens and shows early errors -->
+    <div id="boot-overlay" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1f2937,#0f172a);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;z-index:99999">
+      <div style="text-align:center;max-width:720px;padding:16px">
+        <div style="opacity:.85;margin-bottom:8px">Booting app…</div>
+        <noscript><strong>This app requires JavaScript enabled.</strong></noscript>
+        <div id="boot-error" style="display:none;text-align:left;margin-top:8px;background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);padding:12px;border-radius:8px;white-space:pre-wrap"></div>
+      </div>
+    </div>
     <div id="root"></div>
+    <script>
+      // Minimal runtime error surface so we never show a silent white screen
+      (function(){
+        var overlay = document.getElementById('boot-overlay');
+        function showError(msg){
+          try {
+            var box = document.getElementById('boot-error');
+            if (box){ box.style.display='block'; box.textContent = String(msg || 'Unknown error'); }
+            if (overlay){ overlay.style.background = 'linear-gradient(135deg,#7f1d1d,#450a0a)'; }
+          } catch(_){}
+        }
+        window.addEventListener('error', function(e){ showError(e && (e.message || e.error && e.error.message) || e); });
+        window.addEventListener('unhandledrejection', function(e){ showError(e && (e.reason && (e.reason.message || e.reason)) || 'Unhandled promise rejection'); });
+        // Hide overlay when React attaches something to #root
+        function tryHide(){
+          var root = document.getElementById('root');
+          var o = document.getElementById('boot-overlay');
+          if (root && root.childNodes && root.childNodes.length>0 && o){ o.style.display='none'; return true; }
+          return false;
+        }
+        var iv = setInterval(function(){ if(tryHide()) clearInterval(iv); }, 60);
+        if (document.readyState === 'complete' || document.readyState === 'interactive') { setTimeout(tryHide, 0); }
+        else { document.addEventListener('DOMContentLoaded', function(){ setTimeout(tryHide, 0); }); }
+      })();
+    </script>
+    <!-- Lightweight GLB/VRM viewer for avatar rendering in dialogue -->
+    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

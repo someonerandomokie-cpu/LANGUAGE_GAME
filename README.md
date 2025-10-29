@@ -13,6 +13,10 @@ Key features
 - Continuity via plotState (tone + decisions) fed into the next episode
 - Optional backend proxy to keep API keys server-side: /api/story and /api/dialogues
 
+### Background images (no external AI)
+- The plot and dialogue screens now use locally generated SVG backdrops instead of any AI image generator or external photo service.
+- Images are created procedurally based on the selected city and story context (time of day, mood, weather), so they render instantly and work offline.
+
 ## Run locally
 
 Prereqs

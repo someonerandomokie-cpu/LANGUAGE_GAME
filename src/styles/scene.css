@@ -1,0 +1,64 @@
+.cinematic-root {
+  position: relative;
+  width: 100%;
+  min-height: 360px;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+.cinematic-stage {
+  position: relative;
+  width: 100%;
+  height: 360px;
+}
+.three-mount {
+  position: absolute;
+  inset: 0;
+}
+
+/* Subtitles overlay */
+.subtitles {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
+  display: flex;
+  justify-content: center;
+  padding: 0 12px;
+}
+.subtitle-line {
+  max-width: 80ch;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 16px;
+  line-height: 1.4;
+  backdrop-filter: blur(6px);
+}
+
+.audio-unmute {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.85);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+/* Animated gradient backgrounds per genre */
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.bg-romance .cinematic-stage { background: linear-gradient(135deg, #ff9a9e, #fad0c4, #fbc2eb); background-size: 300% 300%; animation: gradientShift 12s ease infinite; }
+.bg-adventure .cinematic-stage { background: linear-gradient(135deg, #4facfe, #00f2fe, #38ef7d); background-size: 300% 300%; animation: gradientShift 10s ease-in-out infinite; }
+.bg-mystery .cinematic-stage { background: linear-gradient(135deg, #1e3c72, #2a5298, #3a1c71); background-size: 300% 300%; animation: gradientShift 14s ease-in-out infinite; }
+.bg-comedy .cinematic-stage { background: linear-gradient(135deg, #f6d365, #fda085, #f093fb); background-size: 300% 300%; animation: gradientShift 9s ease infinite; }
+.bg-drama .cinematic-stage { background: linear-gradient(135deg, #667db6, #0082c8, #0082c8, #667db6); background-size: 300% 300%; animation: gradientShift 12s ease infinite; }
+.bg-scifi .cinematic-stage { background: linear-gradient(135deg, #0f2027, #203a43, #2c5364); background-size: 300% 300%; animation: gradientShift 11s ease-in-out infinite; }

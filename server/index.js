@@ -1,28 +1,37 @@
 import express from 'express';
+
+// Global error logging for diagnostics
+process.on('uncaughtException', err => {
+  console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', err => {
+  console.error('Unhandled Rejection:', err);
+});
 import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-// Optional: RunwayML video generation (only used if RUNWAY_API_KEY is set)
-let RunwayML = null;
-try {
-  // Dynamically import so server can run even if not installed
-  const mod = await import('@runwayml/sdk').catch(() => null);
-  RunwayML = mod && (mod.default || mod.RunwayML) ? (mod.default || mod.RunwayML) : null;
-} catch {}
+import crypto from 'crypto';
 
-// Load environment variables from the server folder explicitly
+// Load environment variables: root .env first, then server/.env to allow overrides locally
 const __filenameEnv = fileURLToPath(import.meta.url);
 const __dirnameEnv = path.dirname(__filenameEnv);
+dotenv.config();
 dotenv.config({ path: path.resolve(__dirnameEnv, '.env') });
 
 const app = express();
-const PORT = process.env.PORT || 8787;
+// Pin to a stable local port to avoid shell/env conflicts
+const PORT = 8888;
 const ORIGIN = process.env.ORIGIN || '*';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_KEY;
-const RUNWAY_API_KEY = process.env.RUNWAY_API_KEY || process.env.RUNWAYML_API_KEY;
+// Optional separate API key to use exclusively for image generation (do NOT commit the key)
+const IMAGE_OPENAI_KEY = process.env.IMAGE_OPENAI_API_KEY || process.env.IMAGE_OPENAI_KEY || '';
+// Model used to produce a refined image prompt from the plot text (GPT-4o requested by user).
+// Can be overridden via IMAGE_PROMPT_MODEL in env. If not set, no intermediate prompt-gen call is made.
+const IMAGE_PROMPT_MODEL = process.env.IMAGE_PROMPT_MODEL || process.env.IMAGE_PROMPT_MODEL || 'gpt-4o';
+// Removed Runway API key (not used)
 
 app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
 app.use(express.json());
@@ -39,11 +48,15 @@ try {
 } catch {}
 const dataDir = path.resolve(__dirnameDb || '.', 'data');
 const usersDbPath = path.join(dataDir, 'users.json');
+const imagesDir = path.join(dataDir, 'images');
+const audioDir = path.join(dataDir, 'audio');
 
 function ensureDataStore() {
   try {
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
     if (!fs.existsSync(usersDbPath)) fs.writeFileSync(usersDbPath, JSON.stringify({ users: {} }, null, 2));
+    if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
+    if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
   } catch (e) {
     console.warn('Failed to ensure data store', e);
   }
@@ -145,16 +158,17 @@ app.post('/api/story', async (req, res) => {
     const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
     const city = COUNTRY_CITY[country] || 'the capital';
 
-    const contextNote = previousPlot ? `\n\nPrevious episode summary (for continuity): ${previousPlot}` : '';
-    const toneNote = plotState?.tone ? `\n\nPlayer tone preference so far: ${plotState.tone}` : '';
+  const contextNote = previousPlot ? `\n\nPrevious episode summary (for continuity): ${previousPlot}` : '';
+  const toneNote = plotState?.tone ? `\n\nPlayer tone preference so far: ${plotState.tone}` : '';
+  const inspiration = `\n\nInspiration: Take high-level inspiration from anthology-style romance/adventure stories in mobile visual novels (for example, lists like the Romance Club wiki of Complete Stories). Do NOT copy or reference the source directly; keep the plot fully original.`;
 
-    const prompt = `Write a SHORT plot summary (3-4 sentences MAX) for Episode ${episodeNum}.
+  const prompt = `Write a SHORT plot summary (3-4 sentences MAX) for Episode ${episodeNum}.
 
 Main Character: ${avatarData.name || 'The Traveler'}
 Friend: ${buddy}
 Genres: ${genresList.join(', ') || 'slice-of-life'}
 Setting: ${city}, ${country}
-Country: ${country}${contextNote}${toneNote}
+Country: ${country}${contextNote}${toneNote}${inspiration}
 
 Requirements:
 - Output in English only
@@ -202,6 +216,7 @@ Friend: ${buddy}
 Setting: ${city}, ${country}
 Vocabulary words (TARGET LANGUAGE, may be embedded as-is): ${vocabList}
 Preferred tone from player choices: ${plotState?.tone || 'neutral'}
+Inspiration: Take high-level inspiration from anthology-style romance/adventure visual novels (e.g., lists like the Romance Club wiki). Do NOT copy or reference the source; keep all dialogue fully original.
 
 Requirements:
 - Dialogue lines must be in English ONLY. The ONLY allowed non-English words are from the provided vocabulary list (embed sparingly and naturally).
@@ -308,89 +323,192 @@ Constraints:
   }
 });
 
-// Generate an 8-second intro video using RunwayML (best-effort). Returns { videoUrl } or { videoUrl: null } if not configured.
-app.post('/api/intro-video', async (req, res) => {
+// Removed /api/intro-video (Runway) — video generation disabled
+
+// Serve cached data (images) statically
+try {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const dataPath = path.resolve(__dirname, 'data');
+  app.use('/data', express.static(dataPath));
+} catch {}
+
+// Utility: quick hash for cache keys
+function sha1(text) {
+  return crypto.createHash('sha1').update(text).digest('hex');
+}
+
+// Generate an illustrative photo for the plot or location using OpenAI Images API
+app.post('/api/generate-image', async (req, res) => {
   try {
-    const { lang = 'Spanish', genre = 'Adventure', city = 'Barcelona', plot = '', avatarUrl = '' } = req.body || {};
-    if (!RUNWAY_API_KEY) {
-      return res.json({ videoUrl: null, reason: 'RUNWAY not configured' });
-    }
+    if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
+  const { plot = '', lang = 'Spanish', genres = [], size: reqSize } = req.body || {};
+    const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+    const city = COUNTRY_CITY[country] || 'the capital';
 
-    // Build a prompt that explicitly uses BOTH the plot and the user's avatar
-    const promptText = [
-      `Cinematic 8-second intro for a ${genre} story set in ${city}.`,
-      `Plot summary: ${plot}`,
-      avatarUrl ? `The main character should clearly resemble the avatar from this model URL: ${avatarUrl}.` : 'Focus on a single protagonist. ',
-      'Show local mood and location establishing shots; no text overlays; cohesive, filmic look.'
-    ].join(' ');
+    // Short, photorealistic prompt tuned for speed and clarity
+    const basePromptPieces = [
+      genres && genres.length ? `Cinematic, realistic photo inspired by a ${genres.join(' & ')} story.` : 'Cinematic, realistic photo.',
+      `Location: ${city}, ${country}.`,
+      `Natural lighting, no text, no watermarks, richly detailed streetscape or skyline.`,
+      `If people appear, keep them incidental (no faces prominent).`,
+      plot ? `Mood cues from this short plot: ${plot.slice(0, 320)}` : ''
+    ].filter(Boolean);
 
-    // Prefer text-to-video when available; fall back to image-to-video with prompt-only
-    if (RunwayML) {
+    let prompt = basePromptPieces.join(' ');
+
+    // If we have a prompt-generation model available (e.g. gpt-4o) and an OPENAI_KEY,
+    // use it to create a concise, image-model-optimized prompt. This keeps the image API
+    // call on the image-only key (IMAGE_OPENAI_KEY) while using the main key to craft the prompt.
+    if (IMAGE_PROMPT_MODEL && OPENAI_KEY) {
       try {
-        const client = new RunwayML({ apiKey: RUNWAY_API_KEY });
-        let task = null;
-        if (client?.textToVideo?.create) {
-          task = await client.textToVideo
-            .create({ model: 'gen4_turbo', promptText, ratio: '1280:720', duration: 8 })
-            .waitForTaskOutput();
-        } else if (client?.imageToVideo?.create) {
-          task = await client.imageToVideo
-            .create({ model: 'gen4_turbo', promptText, ratio: '1280:720', duration: 8 })
-            .waitForTaskOutput();
+        const instruct = `You are a terse prompt-engineer for image generation models. Given the context and mood cues, produce ONE short, photorealistic prompt (1-2 sentences) optimized for a modern image model. Do NOT add commentary or markdown.`;
+        const msg = `${instruct}\n\nContext: ${basePromptPieces.join(' ')}`;
+        const pr = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+          body: JSON.stringify({ model: IMAGE_PROMPT_MODEL, messages: [{ role: 'user', content: msg }], max_tokens: 200, temperature: 0.8 })
+        });
+        if (pr.ok) {
+          const prData = await pr.json();
+          const candidate = prData?.choices?.[0]?.message?.content?.trim();
+          if (candidate) {
+            // prefer the generated candidate as the final prompt
+            prompt = candidate.replace(/```/g, '').trim();
+          }
+        } else {
+          const detail = await pr.text().catch(() => '');
+          console.warn('Prompt-gen call failed, falling back to base prompt', { status: pr.status, detail: detail.slice(0, 200) });
         }
-        const url = (task && (task.outputs?.[0]?.url || task.result?.url || task.url)) || null;
-        return res.json({ videoUrl: url });
-      } catch (sdkErr) {
-        console.warn('Runway SDK failed; falling back to REST', sdkErr?.message || sdkErr);
+      } catch (err) {
+        console.warn('Prompt-gen error; using base prompt', err?.message || err);
       }
     }
 
-    // REST fallback (best-effort): submit a generation task via Runway API
+    ensureDataStore();
+  // Coerce to API-supported sizes
+  const supportedSizes = new Set(['1024x1024', '1024x1536', '1536x1024', 'auto']);
+  let size = (reqSize && typeof reqSize === 'string') ? reqSize : '1024x1024';
+  if (!supportedSizes.has(size)) size = '1024x1024';
+  const key = sha1(`${lang}::${city}::${country}::${(genres||[]).join(',')}::${size}::${prompt}`);
+    const cached = path.join(imagesDir, `${key}.png`);
+    if (fs.existsSync(cached)) {
+      return res.json({ url: `/data/images/${key}.png`, cached: true });
+    }
+
+    // Call OpenAI Images with a timeout guard; typical times 4–10s (use 15s max)
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 15000);
     try {
-      const createResp = await fetch('https://api.runwayml.com/v1/videos', {
+      // Use the image-specific key if provided; otherwise fall back to the main OPENAI_KEY
+      const imagesKey = IMAGE_OPENAI_KEY || OPENAI_KEY;
+      const r = await fetch('https://api.openai.com/v1/images/generations', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${RUNWAY_API_KEY}`
+          'Authorization': `Bearer ${imagesKey}`
         },
-        body: JSON.stringify({ model: 'gen4_turbo', promptText, ratio: '1280:720', duration: 8 })
+        body: JSON.stringify({
+          model: 'gpt-image-1',
+          prompt,
+          size
+        }),
+        signal: controller.signal
       });
-      if (!createResp.ok) {
-        const detail = await createResp.text().catch(() => '');
-        return res.status(502).json({ error: 'Runway create failed', detail });
+      clearTimeout(t);
+      if (!r.ok) {
+        const detail = await r.text().catch(()=> '');
+        return res.status(502).json({ error: 'image generation failed', detail });
       }
-      const createData = await createResp.json();
-      const id = createData?.id || createData?.task_id || createData?.taskId;
-      if (!id) return res.status(502).json({ error: 'Runway create returned no id' });
-
-      // Poll for completion up to ~20s
-      let attempts = 0;
-      let videoUrl = null;
-      while (attempts < 10) {
-        await new Promise(r => setTimeout(r, 2000));
-        attempts++;
-        const statusResp = await fetch(`https://api.runwayml.com/v1/videos/${id}`, {
-          headers: { Authorization: `Bearer ${RUNWAY_API_KEY}` }
-        });
-        if (!statusResp.ok) continue;
-        const statusData = await statusResp.json();
-        const st = statusData?.status || statusData?.state || '';
-        if (/complete|succeed/i.test(st)) {
-          videoUrl = statusData?.outputs?.[0]?.url || statusData?.result?.url || statusData?.url || null;
-          break;
+      const data = await r.json();
+      let buf;
+      const b64 = data?.data?.[0]?.b64_json;
+      const url = data?.data?.[0]?.url;
+      if (b64) {
+        buf = Buffer.from(b64, 'base64');
+      } else if (url) {
+        try {
+          const ir = await fetch(url);
+          if (!ir.ok) {
+            const detail = await ir.text().catch(()=>'');
+            return res.status(502).json({ error: 'image download failed', detail });
+          }
+          const ab = await ir.arrayBuffer();
+          buf = Buffer.from(ab);
+        } catch (dlErr) {
+          console.error('image download error', dlErr);
+          return res.status(500).json({ error: 'server error' });
         }
-        if (/failed|error/i.test(st)) {
-          break;
-        }
+      } else {
+        return res.status(502).json({ error: 'no image returned' });
       }
-      return res.json({ videoUrl });
-    } catch (restErr) {
-      console.warn('Runway REST failed', restErr?.message || restErr);
-      return res.status(500).json({ error: 'intro video generation failed (Runway REST)' });
+      fs.writeFileSync(cached, buf);
+      return res.json({ url: `/data/images/${key}.png`, cached: false });
+    } catch (e) {
+      if (e?.name === 'AbortError') return res.status(504).json({ error: 'timeout' });
+      console.error('generate-image error', e);
+      return res.status(500).json({ error: 'server error' });
     }
   } catch (e) {
-    console.error('intro-video error', e);
-    return res.status(500).json({ error: 'intro video generation failed' });
+    console.error('generate-image error (outer)', e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Text-to-Speech generation and caching
+app.post('/api/tts', async (req, res) => {
+  try {
+    if (!OPENAI_KEY) return res.status(400).json({ error: 'Missing OPENAI_API_KEY' });
+    const { text = '', lang = 'English', voice: reqVoice } = req.body || {};
+    const cleanText = String(text || '').trim();
+    if (!cleanText) return res.status(400).json({ error: 'Missing text' });
+
+    // Basic voice mapping by language (can be expanded)
+    const defaultVoice = 'alloy';
+    const voice = typeof reqVoice === 'string' && reqVoice.trim() ? reqVoice.trim() : defaultVoice;
+
+    ensureDataStore();
+    const key = sha1(`${lang}::${voice}::${cleanText}`);
+    const outPath = path.join(audioDir, `${key}.mp3`);
+    if (fs.existsSync(outPath)) {
+      return res.json({ url: `/data/audio/${key}.mp3`, cached: true });
+    }
+
+    // Call OpenAI TTS with a timeout
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 20000);
+    try {
+      const r = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENAI_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini-tts',
+          voice,
+          input: cleanText,
+          format: 'mp3'
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(t);
+      if (!r.ok) {
+        const detail = await r.text().catch(()=> '');
+        return res.status(502).json({ error: 'tts failed', detail });
+      }
+      const ab = await r.arrayBuffer();
+      const buf = Buffer.from(ab);
+      fs.writeFileSync(outPath, buf);
+      return res.json({ url: `/data/audio/${key}.mp3`, cached: false });
+    } catch (e) {
+      if (e?.name === 'AbortError') return res.status(504).json({ error: 'timeout' });
+      console.error('tts error', e);
+      return res.status(500).json({ error: 'server error' });
+    }
+  } catch (e) {
+    console.error('tts (outer) error', e);
+    return res.status(500).json({ error: 'server error' });
   }
 });
 
@@ -408,7 +526,7 @@ try {
   // ignore if not available (e.g., during dev)
 }
 
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = '127.0.0.1';
 app.listen(PORT, HOST, () => {
   console.log(`Language-Game server listening on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT}`);
 });
