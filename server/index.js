@@ -51,6 +51,13 @@ const usersDbPath = path.join(dataDir, 'users.json');
 const imagesDir = path.join(dataDir, 'images');
 const audioDir = path.join(dataDir, 'audio');
 
+// near other requires
+const generateImageRoute = require('./routes/generate-image-replicate');
+
+// after express app is created and middleware set:
+app.use(express.json({ limit: '1mb' }));
+app.use(generateImageRoute);
+
 function ensureDataStore() {
   try {
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
