@@ -28,6 +28,7 @@ export default function DialogueScene({
   choicesContent = null,
   practiceContent = null
 }) {
+  const stripQuotes = (s) => String(s || '').replace(/["'“”‘’]/g, '');
   const current = dialogues[index] || {};
   const currentSpeaker = current.speaker || "";
 
@@ -158,7 +159,7 @@ export default function DialogueScene({
             {current && (
               <>
                 <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 6, color: '#111' }}>{currentSpeaker}</div>
-                <div style={{ fontSize: 16, color: '#111' }}>{current.text}</div>
+                <div style={{ fontSize: 16, color: '#111' }}>{stripQuotes(current.text)}</div>
               </>
             )}
           </div>
@@ -210,7 +211,7 @@ export default function DialogueScene({
       </div>
 
       <div className="dialogue-text" style={styles.textBox}>
-        <p><strong>{currentSpeaker}:</strong> {current.text}</p>
+        <p><strong>{currentSpeaker}:</strong> {stripQuotes(current.text)}</p>
       </div>
 
       <div className="user-zone" style={{
