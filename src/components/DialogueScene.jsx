@@ -28,9 +28,13 @@ export default function DialogueScene({
   choicesContent = null,
   practiceContent = null
 }) {
-  const stripQuotes = (s) => String(s || '').replace(/["'“”‘’]/g, '');
   const current = dialogues[index] || {};
   const currentSpeaker = current.speaker || "";
+  const sanitizedText = useMemo(() => {
+    const t = String(current.text || "");
+    // Remove straight and curly quotes
+    return t.replace(/["'“”‘’]/g, "").trim();
+  }, [current.text]);
 
   // Determine which NPC is currently speaking
   const currentNpcName = useMemo(() => {
@@ -159,7 +163,7 @@ export default function DialogueScene({
             {current && (
               <>
                 <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 6, color: '#111' }}>{currentSpeaker}</div>
-                <div style={{ fontSize: 16, color: '#111' }}>{stripQuotes(current.text)}</div>
+                <div style={{ fontSize: 16, color: '#111' }}>{sanitizedText}</div>
               </>
             )}
           </div>
@@ -211,7 +215,7 @@ export default function DialogueScene({
       </div>
 
       <div className="dialogue-text" style={styles.textBox}>
-        <p><strong>{currentSpeaker}:</strong> {stripQuotes(current.text)}</p>
+        <p><strong>{currentSpeaker}:</strong> {sanitizedText}</p>
       </div>
 
       <div className="user-zone" style={{
