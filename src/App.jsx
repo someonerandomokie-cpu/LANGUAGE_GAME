@@ -355,16 +355,16 @@ function AppInner() {
     if (storyDialogues && storyDialogues.length > 0) return;
     if (prefetch.dialogues && prefetch.dialogues.length) {
       setPlotSummary(prefetch.plot);
-      // Use OpenAI dialogues as-is (no local fallback choices)
-      const withChoices = prefetch.dialogues;
-      setStoryDialogues(withChoices);
+      // Clean OpenAI dialogues to avoid consecutive same-speaker lines
+      const cleaned = mergeConsecutiveSameSpeaker(prefetch.dialogues);
+      setStoryDialogues(cleaned);
       // resume from saved index if available for this episode
       const saved = (episodes[language]?.progress && episodes[language]?.progress[currentEpisode || 1]) ?? episodes[language]?.lastSeenDialogueIndex;
-      const startIdx = (typeof saved === 'number' && saved >= 0 && saved < withChoices.length) ? saved : 0;
+      const startIdx = (typeof saved === 'number' && saved >= 0 && saved < cleaned.length) ? saved : 0;
       setDialogueIndex(startIdx);
       setEpisodes(prev => {
         const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
-        return { ...prev, [language]: { ...langData, generatedPlot: prefetch.plot, generatedDialogues: withChoices } };
+        return { ...prev, [language]: { ...langData, generatedPlot: prefetch.plot, generatedDialogues: cleaned } };
       });
       // ensure backgrounds array is set from prefetch images
       if (prefetch.images && prefetch.images.length) {
@@ -380,15 +380,14 @@ function AppInner() {
         const prevPlotState = episodes[language]?.plotState || plotState;
         // Strictly use OpenAI for dialogues; surface error if unavailable
         const dlg = await remoteGenerateDialogues({ plot: plotSummary, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
-        // Use OpenAI dialogues as-is (no local fallback choices)
-        const withChoices = dlg;
-        setStoryDialogues(withChoices);
+        const cleaned = mergeConsecutiveSameSpeaker(dlg);
+        setStoryDialogues(cleaned);
         const saved = (episodes[language]?.progress && episodes[language]?.progress[currentEpisode || 1]) ?? episodes[language]?.lastSeenDialogueIndex;
-        const startIdx = (typeof saved === 'number' && saved >= 0 && saved < withChoices.length) ? saved : 0;
+        const startIdx = (typeof saved === 'number' && saved >= 0 && saved < cleaned.length) ? saved : 0;
         setDialogueIndex(startIdx);
         setEpisodes(prev => {
           const langData = prev[language] || { unlocked: [1], completed: [], started: true, genres };
-          return { ...prev, [language]: { ...langData, generatedPlot: plotSummary, generatedDialogues: withChoices } };
+          return { ...prev, [language]: { ...langData, generatedPlot: plotSummary, generatedDialogues: cleaned } };
         });
       } catch (e) {
         console.warn('On-demand dialogue generation failed', e);
@@ -904,6 +903,30 @@ function AppInner() {
     const n = normalizeSpeakerName(dlg?.speaker);
     const buddy = normalizeSpeakerName(buddyName || '');
     return n && (n === buddy || n === 'buddy' || n === 'friend');
+  }
+
+  // Prevent consecutive lines from the same speaker by merging them
+  function mergeConsecutiveSameSpeaker(dialogues) {
+    const out = [];
+    for (const d of (dialogues || [])) {
+      const curr = { ...d };
+      if (out.length > 0) {
+        const last = out[out.length - 1];
+        if (normalizeSpeakerName(last.speaker) === normalizeSpeakerName(curr.speaker)) {
+          const t1 = String(last.text || '').trim();
+          const t2 = String(curr.text || '').trim();
+          last.text = t1 && t2 ? `${t1} ${t2}` : (t1 || t2);
+          if (curr.choices && curr.choices.length) last.choices = curr.choices;
+          last.isFinalLine = !!curr.isFinalLine;
+          continue;
+        }
+      }
+      out.push(curr);
+    }
+    if (out.length) {
+      out.forEach((d, i) => { d.isFinalLine = i === out.length - 1; });
+    }
+    return out;
   }
 
   function createFallbackChoices(idx, vocabPack) {
@@ -2433,8 +2456,7 @@ function AppInner() {
                                 const arr = prev.slice();
                                 const insertAt = dialogueIndex + 1;
                                 arr.splice(insertAt, 0, { speaker: avatar?.name || 'You', text: spoken, isFinalLine: false });
-                                if (arr.length) arr.forEach((d, i) => { d.isFinalLine = i === arr.length - 1; });
-                                return arr;
+                                return mergeConsecutiveSameSpeaker(arr);
                               });
                               setDialogueIndex(i => i + 1);
                             }
@@ -2455,8 +2477,7 @@ function AppInner() {
                               const arr = prev.slice();
                               const insertAt = dialogueIndex + 1;
                               arr.splice(insertAt, 0, { speaker: avatar?.name || 'You', text: spoken, isFinalLine: false });
-                              if (arr.length) arr.forEach((d, i) => { d.isFinalLine = i === arr.length - 1; });
-                              return arr;
+                              return mergeConsecutiveSameSpeaker(arr);
                             });
                             setDialogueIndex(i => i + 1);
                           }} style={{ padding: '10px 12px', borderRadius: 10, background: '#ECFEFF', border: 'none', textAlign: 'left' }}>{c.text}</button>
@@ -2480,8 +2501,7 @@ function AppInner() {
                               const arr = prev.slice();
                               const insertAt = dialogueIndex + 1;
                               arr.splice(insertAt, 0, { speaker: avatar?.name || 'You', text: spoken, isFinalLine: false });
-                              if (arr.length) arr.forEach((d, i) => { d.isFinalLine = i === arr.length - 1; });
-                              return arr;
+                              return mergeConsecutiveSameSpeaker(arr);
                             });
                             setDialogueIndex(i => i + 1);
                           } else {
