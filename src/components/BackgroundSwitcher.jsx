@@ -76,7 +76,7 @@ export default function BackgroundSwitcher({ images = [], activeIndex = 0, fadeD
     transition: `opacity ${fadeDuration}ms ease`,
     willChange: 'opacity',
     filter: 'saturate(0.98) contrast(0.95)',
-    transform: 'scale(1.06)',
+    transform: 'scale(1.10)',
     transformOrigin: 'center center'
   };
 

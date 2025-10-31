@@ -25,7 +25,8 @@ export default function DialogueScene({
   playerName = "",
   mode = "all", // 'all' = show all NPCs seen so far; 'pair' = cinematic two-character (NPC left + player right)
   buddyName = "",
-  choicesContent = null
+  choicesContent = null,
+  practiceContent = null
 }) {
   const current = dialogues[index] || {};
   const currentSpeaker = current.speaker || "";
@@ -126,7 +127,7 @@ export default function DialogueScene({
           className="avatar-left"
           style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
-            width: 240, maxWidth: '24vw', marginRight: 16,
+            width: 240, maxWidth: '24vw', marginRight: 40,
             opacity: leftIsSpeaking ? 1 : 0.5, transition: 'opacity 0.3s ease'
           }}
         >
@@ -137,7 +138,7 @@ export default function DialogueScene({
         </div>
 
         {/* === CENTER COLUMN (choices above + dialogue box) === */}
-        <div style={{ flex: '0 1 56%', maxWidth: 920, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+        <div style={{ flex: '0 1 52%', maxWidth: 920, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
           {choicesContent && (
             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
               {choicesContent}
@@ -161,6 +162,11 @@ export default function DialogueScene({
               </>
             )}
           </div>
+          {practiceContent && (
+            <div style={{ width: '100%', marginTop: 10 }}>
+              {practiceContent}
+            </div>
+          )}
         </div>
 
         {/* === RIGHT PLAYER AVATAR (column) === */}
@@ -168,7 +174,7 @@ export default function DialogueScene({
           className="avatar-right"
           style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
-            width: 240, maxWidth: '24vw', marginLeft: 16,
+            width: 240, maxWidth: '24vw', marginLeft: 40,
             opacity: isPlayerSpeaking ? 1 : 0.5, transition: 'opacity 0.3s ease'
           }}
         >

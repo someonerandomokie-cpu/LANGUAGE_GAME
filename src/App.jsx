@@ -271,34 +271,24 @@ function AppInner() {
           }
         })();
 
-        // Generate dialogues (remote then fallback)
-        const dialogues = await (async () => {
-          try {
-            const dlg = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
-            return dlg;
-          } catch (err) {
-            console.warn('remoteGenerateDialogues failed, falling back to aiGenerateDialogues', err);
-            return aiGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack });
-          }
-        })();
-
-        const padded = padDialoguesForEpisode(dialogues, language, avatar.name, buddyName);
+        // Generate dialogues strictly via OpenAI (no local fallback)
+        const dialogues = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
 
         // Prefetch images for representative beats (2-3 images)
         const images = [];
         try {
-          const total = Math.max(1, padded.length);
+          const total = Math.max(1, dialogues.length);
           const candidateIndices = [
             Math.floor(total * 0.12),
             Math.floor(total * 0.45),
             Math.floor(total * 0.78)
           ].map(i => Math.min(total - 1, Math.max(0, i)));
-          const uniq = Array.from(new Set(candidateIndices)).filter(i => padded[i] && padded[i].text && padded[i].text.length > 10);
+          const uniq = Array.from(new Set(candidateIndices)).filter(i => dialogues[i] && dialogues[i].text && dialogues[i].text.length > 10);
 
           const backend = getBackendBase();
           for (let idx of uniq.slice(0, 3)) {
             try {
-              const sampleLine = padded[idx].text.slice(0, 220); // short excerpt for prompt
+              const sampleLine = dialogues[idx].text.slice(0, 220); // short excerpt for prompt
               const body = {
                 plot: storyText,
                 lang: language || 'English',
@@ -342,7 +332,7 @@ function AppInner() {
         }
 
         if (!cancelled) {
-          setPrefetch({ inFlight: false, plot: storyText, dialogues: padded, images });
+          setPrefetch({ inFlight: false, plot: storyText, dialogues, images });
           // Update local background images for BackgroundSwitcher
           if (images && images.length) {
             setBackgroundImages(images.map(i => ({ url: i.url, prompt: i.prompt, cached: i.cached, idx: i.idx })));
@@ -392,14 +382,9 @@ function AppInner() {
         setDialogueError('');
         setDialogueLoading(true);
         const prevPlotState = episodes[language]?.plotState || plotState;
-        let dlg;
-        try {
-          dlg = await remoteGenerateDialogues({ plot: plotSummary, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
-        } catch (e) {
-          dlg = aiGenerateDialogues({ plot: plotSummary, avatarData: avatar, buddy: buddyName, lang: language, vocabPack });
-        }
-        const padded = padDialoguesForEpisode(dlg, language, avatar.name, buddyName);
-        const withChoices = padded.map((d, idx) => {
+        // Strictly use OpenAI for dialogues; surface error if unavailable
+        const dlg = await remoteGenerateDialogues({ plot: plotSummary, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
+        const withChoices = dlg.map((d, idx) => {
           if (d && d.choices && d.choices.length) return d;
           const fb = createFallbackChoices(idx, vocabPack);
           return fb ? { ...d, choices: fb } : d;
@@ -952,12 +937,23 @@ function AppInner() {
     }));
   }
   // Generate AI choices on demand when no explicit choices are present and at natural intervals
-  // Always use OpenAI to generate choices when a line lacks explicit choices; guard to prevent repeat calls.
+  // Use OpenAI to generate choices when a line lacks explicit choices, but only every ~6 lines and not when user is speaking.
   const aiChoicesLoadingRef = useRef(new Set());
   useEffect(() => {
     if (screen !== 'dialogue') return;
     const dlg = storyDialogues[dialogueIndex];
     if (!dlg || (dlg.choices && dlg.choices.length)) return;
+    if (isUserSpeaker(dlg)) return; // don't generate if user is speaking
+    // Throttle: seeded interval ~ every 5–7 lines based on language/buddy/plot
+    const interval = (() => {
+      try {
+        const seedStr = `${language}|${buddyName}|${String(plotSummary || '').slice(0,64)}`;
+        const hc = Math.abs(hashCode(seedStr));
+        return 5 + (hc % 3); // 5,6,7
+      } catch { return 6; }
+    })();
+    const shouldGen = dialogueIndex > 0 && (dialogueIndex % interval === 0);
+    if (!shouldGen) return;
     if (aiChoices[dialogueIndex]) return; // already have choices
     if (aiChoicesLoadingRef.current.has(dialogueIndex)) return; // in-flight
     aiChoicesLoadingRef.current.add(dialogueIndex);
@@ -1878,7 +1874,7 @@ function AppInner() {
 
           
 
-          <div style={{ marginTop: 18, width: '100%', display: 'flex', justifyContent: 'flex-end', paddingRight: 32 }}>
+          <div style={{ marginTop: 18, width: '100%', display: 'flex', justifyContent: 'flex-end', paddingRight: 56 }}>
             <button type="submit" style={{ ...styles.continueButton, marginTop: 0 }}>
               Continue →
             </button>
@@ -1950,7 +1946,7 @@ function AppInner() {
           </div>
         </div>
 
-        <div style={{ marginTop: 18, width: '100%', display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ marginTop: 30, width: '100%', display: 'flex', justifyContent: 'center' }}>
           <button onClick={() => setScreen('genres')} style={{ ...styles.continueButton, marginTop: 0 }}>Continue →</button>
         </div>
       </div>
@@ -2358,9 +2354,11 @@ function AppInner() {
         <div style={{ ...styles.container, justifyContent: 'center', background: 'transparent', position: 'relative', zIndex: 1 }} onClick={() => {
         // Disable any clicks while loading or when no current line
         if (dialogueLoading || !dlg) return;
-        // Advance dialogue on background click only when no choices are present
-        const hasChoices = dlg && dlg.choices && dlg.choices.length > 0;
-        if (hasChoices) {
+        // Advance dialogue on background click only when no visible choices are present
+        const hasScriptChoices = dlg && dlg.choices && dlg.choices.length > 0;
+        // AI choices are only visible when the user is NOT speaking
+        const hasVisibleAiChoices = (aiChoices[dialogueIndex] && aiChoices[dialogueIndex].length > 0 && !isUserSpeaker(dlg));
+        if (hasScriptChoices || hasVisibleAiChoices) {
           // Do not advance if choices are available - user must select one
           return;
         }
@@ -2410,6 +2408,7 @@ function AppInner() {
                 buddyName={buddyName}
                 choicesContent={(() => {
                   if (isLastLine || !dlg) return null;
+                  if (userSpeaking) return null; // show choices only when the user is NOT speaking
                   // Prefer explicit script choices; else use OpenAI-generated aiChoices
                   if (dlg.choices && dlg.choices.length > 0) {
                     return (
@@ -2423,12 +2422,19 @@ function AppInner() {
                               const correctMeaning = targetVocab.meaning;
                               const distractors = (vocabPack || []).filter(v => v.word !== c.practiceWord && v.meaning !== correctMeaning).slice(0, 2).map(v => v.meaning);
                               const opts = [correctMeaning, ...distractors].sort(() => Math.random() - 0.5);
-                              setPracticeState({ targetWord: c.practiceWord, options: opts, correctIndex: opts.indexOf(correctMeaning), nextIndex: (dialogueIndex + (c.nextDelta || 1)) });
+                              setPracticeState({ targetWord: c.practiceWord, options: opts, correctIndex: opts.indexOf(correctMeaning) });
                             } else {
                               if (c.effect) applyChoiceEffect(c.effect);
-                              const delta = c.nextDelta != null ? c.nextDelta : 1;
-                              const next = Math.min(storyDialogues.length - 1, dialogueIndex + delta);
-                              setDialogueIndex(next);
+                              // Contribute the user's selected text as a spoken line
+                              const spoken = String(c.text || '').replace(/^Say:\s*/i, '').replace(/^\s*\"|\"\s*$/g, '').trim() || (c.text || '').trim();
+                              setStoryDialogues(prev => {
+                                const arr = prev.slice();
+                                const insertAt = dialogueIndex + 1;
+                                arr.splice(insertAt, 0, { speaker: avatar?.name || 'You', text: spoken, isFinalLine: false });
+                                if (arr.length) arr.forEach((d, i) => { d.isFinalLine = i === arr.length - 1; });
+                                return arr;
+                              });
+                              setDialogueIndex(i => i + 1);
                             }
                           }} style={{ padding: '10px 12px', borderRadius: 10, background: '#F0F9FF', border: 'none', textAlign: 'left' }}>{c.text}</button>
                         ))}
@@ -2442,9 +2448,15 @@ function AppInner() {
                           <button key={`ai-${ci}`} onClick={(e) => {
                             e.stopPropagation();
                             if (c.effect) applyChoiceEffect(c.effect);
-                            const delta = c.nextDelta != null ? c.nextDelta : 1;
-                            const next = Math.min(storyDialogues.length - 1, dialogueIndex + delta);
-                            setDialogueIndex(next);
+                            const spoken = String(c.text || '').replace(/^Say:\s*/i, '').replace(/^\s*\"|\"\s*$/g, '').trim() || (c.text || '').trim();
+                            setStoryDialogues(prev => {
+                              const arr = prev.slice();
+                              const insertAt = dialogueIndex + 1;
+                              arr.splice(insertAt, 0, { speaker: avatar?.name || 'You', text: spoken, isFinalLine: false });
+                              if (arr.length) arr.forEach((d, i) => { d.isFinalLine = i === arr.length - 1; });
+                              return arr;
+                            });
+                            setDialogueIndex(i => i + 1);
                           }} style={{ padding: '10px 12px', borderRadius: 10, background: '#ECFEFF', border: 'none', textAlign: 'left' }}>{c.text}</button>
                         ))}
                       </div>
@@ -2452,28 +2464,33 @@ function AppInner() {
                   }
                   return null;
                 })()}
-              />
-
-              {/* Practice UI */}
-              {practiceState && (
-                <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEFCE8' }} onClick={(e) => e.stopPropagation()}>
-                  <div style={{ marginBottom: 8 }}>Practice: choose the correct translation for <strong>{practiceState.targetWord}</strong></div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    {practiceState.options.map((opt, oi) => (
-                      <button key={oi} onClick={() => {
-                        const correct = oi === practiceState.correctIndex;
-                        if (correct) {
-                          const next = practiceState.nextIndex != null ? practiceState.nextIndex : Math.min(storyDialogues.length - 1, dialogueIndex + 1);
-                          setPracticeState(null);
-                          setDialogueIndex(next);
-                        } else {
-                          // Remain on practice until correct, no voice feedback
-                        }
-                      }} style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#FFF' }}>{opt}</button>
-                    ))}
+                practiceContent={practiceState ? (
+                  <div style={{ padding: 12, borderRadius: 10, background: '#FEFCE8' }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ marginBottom: 8 }}>Practice: choose the correct translation for <strong>{practiceState.targetWord}</strong></div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {practiceState.options.map((opt, oi) => (
+                        <button key={oi} onClick={() => {
+                          const correct = oi === practiceState.correctIndex;
+                          if (correct) {
+                            const spoken = String(practiceState.targetWord || '').trim();
+                            setPracticeState(null);
+                            setStoryDialogues(prev => {
+                              const arr = prev.slice();
+                              const insertAt = dialogueIndex + 1;
+                              arr.splice(insertAt, 0, { speaker: avatar?.name || 'You', text: spoken, isFinalLine: false });
+                              if (arr.length) arr.forEach((d, i) => { d.isFinalLine = i === arr.length - 1; });
+                              return arr;
+                            });
+                            setDialogueIndex(i => i + 1);
+                          } else {
+                            // stay until correct
+                          }
+                        }} style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#FFF' }}>{opt}</button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                ) : null}
+              />
             </div>
           ) : (
             <div style={{ textAlign: 'center', color: '#94A3B8' }}>
@@ -2485,7 +2502,7 @@ function AppInner() {
               )}
             </div>
           )}
-          {!isLastLine && dlg && (!dlg.choices || dlg.choices.length === 0) && !aiChoices[dialogueIndex] && !dialogueLoading && (
+          {!isLastLine && dlg && !dialogueLoading && (
             <div style={{ marginTop: 18, color: '#94A3B8', fontSize: 14, textAlign: 'center' }}>Click here to continue</div>
           )}
           {/* Translation popup */}

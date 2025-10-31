@@ -275,7 +275,7 @@ export function StoryBackground({ city, context }) {
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           filter: context?.timeOfDay === 'night' ? 'brightness(0.7)' : 'none',
-          transform: 'scale(1.06)',
+          transform: 'scale(1.10)',
           transformOrigin: 'center center'
         }}
       />
