@@ -246,7 +246,7 @@ app.post('/api/story', async (req, res) => {
     const contextNote = previousPlot ? `Previous episode summary (for continuity): ${previousPlot}` : '';
     const toneNote = plotState?.tone ? `Player tone preference so far: ${plotState.tone}` : '';
     const instruction = [
-      `Write a vivid, single-paragraph plot summary (~4-7 sentences) for an episodic language-learning story in English.`,
+      `Write a vivid, single-paragraph plot summary (~4-7 sentences) for an episodic story in English.`,
       `Episode ${episodeNum}. Incorporate themes from genres [${genresList.join(', ') || 'slice-of-life'}] and hobbies [${(avatarData?.hobbies || []).join(', ') || 'none'}].`,
       `Main characters must be ${name} (the user) and ${buddy} (the user's best friend and study buddy).`,
       previousPlot
@@ -254,6 +254,7 @@ app.post('/api/story', async (req, res) => {
         : `Create a fresh plot from scratch aligned with the selected genres/hobbies.`,
       `Set the story in ${city}, ${country} with grounded cultural texture.`,
       `Maintain character consistency across episodes and keep unresolved threads plausible, but ensure this episode stands on its own.`,
+      `Avoid any mention or implication that characters are learning English or improving their English. Do not reference language learning at all in the summary.`,
       `Do not include meta notes, bullet points, or headings. Output only the paragraph.`
     ].join('\n');
 
@@ -288,6 +289,7 @@ app.post('/api/dialogues', async (req, res) => {
       `Write exactly 100 lines of natural dialogue in English.`,
       `Main characters: ${name} (the user) and ${buddy} (best friend and study buddy). Include a few recurring named NPCs with stable names.`,
       `Each line format: Speaker: text`,
+      `Always keep precise track of who is speaking. Maintain a consistent cast of names; do not switch between "you" and ${name} arbitrarily. Avoid ambiguous pronouns. Never output unlabeled lines or 'Narrator' lines.`,
       `Keep the plot consistent with the provided plot summary and prior tone/state. Maintain continuity across episodes.`,
       vocabWords.length ? `Gradually incorporate these target-language words inline when it makes narrative sense (no brackets/translations): ${vocabWords.join(', ')}.` : null,
       `When offering player choices, prefer a "Say: \"<target word>\"" option only if it fits the context. If no target word fits, present sensible English plot choices instead.`,
@@ -296,7 +298,7 @@ app.post('/api/dialogues', async (req, res) => {
     ].filter(Boolean).join('\n');
 
     const result = await llmChat([
-      { role: 'system', content: 'You are a screenwriter. Output only dialogue lines and occasional CHOICES blocks.' },
+      { role: 'system', content: 'You are a screenwriter. Output only dialogue lines and occasional CHOICES blocks. Keep exact speaker names consistent across the entire script.' },
       { role: 'user', content: `${instruction}\n\nPlot summary:\n${plot}\n\nSetting: ${city}, ${country}\nTone/state: ${JSON.stringify(plotState)}` }
     ], { temperature: 0.9, max_tokens: 4000 });
 
@@ -329,6 +331,57 @@ app.post('/api/dialogues', async (req, res) => {
   } catch (e) {
     console.error('dialogues error', e);
     res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Generate contextual choices for a dialogue turn
+app.post('/api/choices', async (req, res) => {
+  try {
+    const { plot = '', contextLines = [], lang = 'English', vocabPack = [], buddy = 'Buddy', tone = 'neutral' } = req.body || {};
+    const vocabWords = (Array.isArray(vocabPack) ? vocabPack.map(v => v && (v.word || v.phrase)).filter(Boolean) : []).slice(0, 16);
+    const instruction = [
+      `Given the plot summary and the recent dialogue context, generate 2-3 interactive choices for the player.`,
+      `Choices must be short and make sense in context. They may be in English or (occasionally) include a single ${lang} word inline if natural.`,
+      `Do not include translations in parentheses.`,
+      `Some choices can subtly influence tone ('friendly' | 'neutral' | 'bold'), others have no effect.`,
+      `Return STRICT JSON only as { "choices": [ { "text": "...", "effect": {"tone": "friendly"|"neutral"|"bold"} | null, "nextDelta": 1 }, ... ] }`,
+      vocabWords.length ? `Useful ${lang} words to optionally use: ${vocabWords.join(', ')}` : null
+    ].filter(Boolean).join('\n');
+
+    const ctxSnippet = (Array.isArray(contextLines) ? contextLines.slice(-6) : []).map(l => `${l.speaker}: ${l.text}`).join('\n');
+    const user = { role: 'user', content: `${instruction}\n\nPlot:\n${plot}\n\nRecent lines:\n${ctxSnippet}\n\nCurrent tone: ${tone}` };
+    let out = '';
+    try {
+      const completion = await getOpenAIClient().chat.completions.create({ model: process.env.OPENAI_MODEL || 'gpt-5-mini', messages: [user] });
+      out = completion?.choices?.[0]?.message?.content || '';
+    } catch (err) {
+      const m = String(err?.message||'');
+      if (/must be verified|not found|unsupported model|404/i.test(m)) {
+        const completion2 = await getOpenAIClient().chat.completions.create({ model: 'gpt-4o-mini', messages: [user] });
+        out = completion2?.choices?.[0]?.message?.content || '';
+      } else {
+        throw err;
+      }
+    }
+    // Extract JSON
+    const fence = out.match(/```json\s*([\s\S]*?)\s*```/i);
+    if (fence) out = fence[1];
+    let parsed = null;
+    try { parsed = JSON.parse(out); } catch {
+      const s = out.indexOf('{'); const e = out.lastIndexOf('}');
+      if (s !== -1 && e !== -1) { try { parsed = JSON.parse(out.slice(s, e+1)); } catch {} }
+    }
+    if (!parsed || !Array.isArray(parsed.choices)) return res.status(500).json({ error: 'bad ai payload', raw: out });
+    // Normalize fields
+    const norm = parsed.choices.slice(0,3).map(c => ({
+      text: String(c.text || '').slice(0, 140),
+      effect: c.effect && c.effect.tone ? { tone: c.effect.tone } : null,
+      nextDelta: Number.isFinite(c.nextDelta) ? c.nextDelta : 1
+    }));
+    return res.json({ choices: norm });
+  } catch (e) {
+    console.error('/api/choices error', e);
+    return res.status(500).json({ error: 'server error' });
   }
 });
 

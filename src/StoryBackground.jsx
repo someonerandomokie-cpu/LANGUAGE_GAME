@@ -266,13 +266,6 @@ export function StoryBackground({ city, context }) {
         transition: 'opacity 500ms ease'
       }}
     >
-      {/* Local keyframes for background motion */}
-      <style>{`
-        @keyframes slowZoom {
-          0% { transform: scale(1.02); }
-          100% { transform: scale(1.08); }
-        }
-      `}</style>
       {/* Generated city SVG layer */}
       <div
         style={{
@@ -282,7 +275,8 @@ export function StoryBackground({ city, context }) {
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           filter: context?.timeOfDay === 'night' ? 'brightness(0.7)' : 'none',
-          animation: 'slowZoom 20s ease-in-out infinite alternate'
+          transform: 'scale(1.06)',
+          transformOrigin: 'center center'
         }}
       />
       {/* Mood overlay */}

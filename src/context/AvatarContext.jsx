@@ -13,6 +13,7 @@
  */
 
 import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
+import { glbToPng, preferImageUrl } from '../utils/avatarUtils.js';
 
 const AvatarContext = createContext(null);
 
@@ -25,11 +26,13 @@ export function AvatarProvider({ children }) {
   // Unified URL state for player and buddy, plus NPC cache
   const [avatarUrl, setAvatarUrl] = useState('');
   const [buddyUrl, setBuddyUrlState] = useState('');
+  const [avatarPngUrl, setAvatarPngUrl] = useState('');
   const [npcAvatars, setNpcAvatars] = useState({}); // { [idOrName]: url }
 
   // LocalStorage keys (standardized)
   const LS_KEYS = {
     avatarUrl: 'lg.avatarUrl',
+    avatarPngUrl: 'lg.avatarPngUrl',
     buddyUrl: 'lg.buddyUrl',
     npc: 'lg.npcAvatars',
     // legacy keys to migrate from
@@ -49,12 +52,20 @@ export function AvatarProvider({ children }) {
         if (legacy && !localStorage.getItem(LS_KEYS.avatarUrl)) {
           try { localStorage.setItem(LS_KEYS.avatarUrl, storedAvatar); } catch {}
         }
+        const storedPng = (localStorage.getItem(LS_KEYS.avatarPngUrl) || '').trim();
+        const derived = storedPng || glbToPng(storedAvatar) || '';
+        if (derived) setAvatarPngUrl(derived);
       }
       const storedBuddy = (localStorage.getItem(LS_KEYS.buddyUrl) || '').trim();
       if (storedBuddy) setBuddyUrlState(storedBuddy);
       const storedNpc = localStorage.getItem(LS_KEYS.npc);
       if (storedNpc) {
-        try { setNpcAvatars(JSON.parse(storedNpc) || {}); } catch { setNpcAvatars({}); }
+        try {
+          const raw = JSON.parse(storedNpc) || {};
+          const normalized = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, preferImageUrl(v) || v]));
+          setNpcAvatars(normalized);
+          try { localStorage.setItem(LS_KEYS.npc, JSON.stringify(normalized)); } catch {}
+        } catch { setNpcAvatars({}); }
       }
     } catch {}
   }, []);
@@ -162,7 +173,13 @@ export function AvatarProvider({ children }) {
         metadata: gltf.userData || {},
       });
       // Also reflect URL in the simple string state for general UI usage
-      try { setAvatarUrl(url); localStorage.setItem(LS_KEYS.avatarUrl, url); } catch {}
+      try {
+        setAvatarUrl(url);
+        localStorage.setItem(LS_KEYS.avatarUrl, url);
+        const imgUrl = preferImageUrl(url) || '';
+        setAvatarPngUrl(imgUrl);
+        if (imgUrl) localStorage.setItem(LS_KEYS.avatarPngUrl, imgUrl);
+      } catch {}
 
       setLoading(false);
       return { scene: root, animations: gltf.animations || [], mixer };
@@ -267,18 +284,26 @@ export function AvatarProvider({ children }) {
     error,
     // simple URL state for broader app usage
     avatarUrl,
+    avatarPngUrl,
     buddyUrl,
     npcAvatars,
     // persistence helpers
     saveAvatar: (url, { userId } = {}) => {
       try {
-        setAvatarUrl(url || '');
-        try { localStorage.setItem(LS_KEYS.avatarUrl, url || ''); } catch {}
+        const safeUrl = url || '';
+        const imgUrl = preferImageUrl(safeUrl) || '';
+
+        setAvatarUrl(safeUrl);
+        setAvatarPngUrl(imgUrl);
+        try {
+          localStorage.setItem(LS_KEYS.avatarUrl, safeUrl);
+          localStorage.setItem(LS_KEYS.avatarPngUrl, imgUrl);
+        } catch {}
         // Optionally persist to backend if userId provided
         if (userId) {
           fetch('/api/save-avatar', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId, avatarUrl: url })
+            body: JSON.stringify({ userId, avatarUrl: safeUrl })
           }).catch(() => {});
         }
       } catch {}
@@ -298,8 +323,13 @@ export function AvatarProvider({ children }) {
     },
     setNpcAvatar: (key, url) => {
       try {
+        const norm = (key || '').trim().toLowerCase();
+        const preferred = preferImageUrl(url) || '';
         setNpcAvatars(prev => {
-          const next = { ...(prev || {}), [key]: url };
+          const next = { ...(prev || {}) };
+          // store both the original key and the normalized key for robust lookups
+          if (key) next[key] = preferred;
+          if (norm) next[norm] = preferred;
           try { localStorage.setItem(LS_KEYS.npc, JSON.stringify(next)); } catch {}
           return next;
         });
@@ -310,9 +340,21 @@ export function AvatarProvider({ children }) {
         const a = localStorage.getItem(LS_KEYS.avatarUrl);
         const b = localStorage.getItem(LS_KEYS.buddyUrl);
         const n = localStorage.getItem(LS_KEYS.npc);
-        if (a) setAvatarUrl(a);
+        if (a) {
+          setAvatarUrl(a);
+          const ap = (localStorage.getItem(LS_KEYS.avatarPngUrl) || '').trim();
+          const derived = ap || preferImageUrl(a) || '';
+          if (derived) setAvatarPngUrl(derived);
+        }
         if (b) setBuddyUrlState(b);
-        if (n) { try { setNpcAvatars(JSON.parse(n) || {}); } catch {} }
+        if (n) {
+          try {
+            const raw = JSON.parse(n) || {};
+            const normalized = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, preferImageUrl(v) || v]));
+            setNpcAvatars(normalized);
+            try { localStorage.setItem(LS_KEYS.npc, JSON.stringify(normalized)); } catch {}
+          } catch {}
+        }
       } catch {}
     },
     loadAvatarFromUrl,

@@ -75,7 +75,9 @@ export default function BackgroundSwitcher({ images = [], activeIndex = 0, fadeD
     backgroundRepeat: 'no-repeat',
     transition: `opacity ${fadeDuration}ms ease`,
     willChange: 'opacity',
-    filter: 'saturate(0.98) contrast(0.95)'
+    filter: 'saturate(0.98) contrast(0.95)',
+    transform: 'scale(1.06)',
+    transformOrigin: 'center center'
   };
 
   return (
@@ -85,9 +87,10 @@ export default function BackgroundSwitcher({ images = [], activeIndex = 0, fadeD
         {(!imgs || imgs.length === 0) && (
           <div
             style={{
-              position: 'absolute',
-              inset: 0,
-              background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)'
+              ...layerBase,
+              background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
+              opacity: 1,
+              zIndex: 0
             }}
           />
         )}

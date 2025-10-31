@@ -107,11 +107,59 @@ export default function ThreeAvatarViewer({
   // choose wrapper class based on reaction
   const reactionClass = reaction ? `tav-reaction-${reaction}` : '';
 
-  // If there's no avatar URL, render nothing to avoid placeholder boxes in UI
-  if (!avatarUrl) return null;
+  // If there's no avatar URL, render a lightweight placeholder box so the layout stays stable
+  if (!avatarUrl) {
+    return (
+      <div
+        key={animKey}
+        className={`tav-wrapper ${reactionClass} ${className}`}
+        style={{
+          ...containerStyle,
+          background: 'linear-gradient(135deg, #e2e8f0 0%, #f8fafc 100%)',
+          boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.06)'
+        }}
+        aria-label={alt}
+      >
+        <img
+          src="data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='300' viewBox='0 0 240 300'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%23e2e8f0'/%3E%3Cstop offset='100%25' stop-color='%23f8fafc'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='240' height='300' fill='url(%23g)' rx='16'/%3E%3Ccircle cx='120' cy='120' r='60' fill='%23cbd5e1'/%3E%3Crect x='70' y='200' width='100' height='18' rx='9' fill='%23cbd5e1'/%3E%3C/svg%3E"
+          alt={alt}
+          style={{ width: '80%', height: 'auto', objectFit: 'contain', opacity: 0.9 }}
+        />
+      </div>
+    );
+  }
+
+  // If the URL is an image (png/jpg/jpeg/webp), render it directly as an <img>
+  try {
+    const lower = String(avatarUrl).toLowerCase();
+    const isImage = /(\.png|\.jpg|\.jpeg|\.webp|data:image\/.+;base64,)/.test(lower);
+    const isModel = /(\.glb|\.gltf)(\?|#|$)/.test(lower);
+    if (isImage && !isModel) {
+      return (
+        <div
+          key={animKey}
+          className={`tav-wrapper ${reactionClass} ${className}`}
+          style={containerStyle}
+          aria-label={alt}
+        >
+          <img src={avatarUrl} alt={alt} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        </div>
+      );
+    }
+  } catch {}
 
   // Client rendering: use <model-viewer> fallback (Visage optional, disabled by default)
   if (canClientRender) {
+    // Derive a Ready Player Me PNG thumbnail from a GLB URL when possible
+    let rpmThumb = null;
+    try {
+      const u = String(avatarUrl || '');
+      const m = u.match(/https?:\/\/models\.readyplayer\.me\/([^\/?#]+)/i);
+      if (m && m[1]) {
+        const id = m[1];
+        rpmThumb = `https://api.readyplayer.me/v1/avatars/${id}.png`;
+      }
+    } catch {}
     return (
       <div
         key={animKey}
@@ -120,6 +168,9 @@ export default function ThreeAvatarViewer({
         data-position={position}
         aria-live="polite"
       >
+        {rpmThumb && (
+          <img src={rpmThumb} alt={alt} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', filter: 'saturate(0.98) contrast(0.98)' }} />
+        )}
         <FallbackModelViewer src={avatarUrl} alt={alt} />
       </div>
     );
