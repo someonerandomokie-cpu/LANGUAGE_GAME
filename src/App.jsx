@@ -932,20 +932,28 @@ function AppInner() {
   // Generate AI choices on demand when no explicit choices are present and at natural intervals
   // Use OpenAI to generate choices when a line lacks explicit choices, but only every ~6 lines and not when user is speaking.
   const aiChoicesLoadingRef = useRef(new Set());
+  const lastChoiceIdxRef = useRef(-1);
   useEffect(() => {
     if (screen !== 'dialogue') return;
     const dlg = storyDialogues[dialogueIndex];
-    if (!dlg || (dlg.choices && dlg.choices.length)) return;
+    if (!dlg) return;
+    if (dlg.choices && dlg.choices.length) {
+      // Reset spacing when explicit script choices appear
+      lastChoiceIdxRef.current = dialogueIndex;
+      return;
+    }
     if (isUserSpeaker(dlg)) return; // don't generate if user is speaking
-    // Throttle: seeded interval ~ every 5–7 lines based on language/buddy/plot
+    // Throttle: seeded interval ~ every 5–10 lines based on language/buddy/plot
     const interval = (() => {
       try {
         const seedStr = `${language}|${buddyName}|${String(plotSummary || '').slice(0,64)}`;
         const hc = Math.abs(hashCode(seedStr));
-        return 5 + (hc % 3); // 5,6,7
-      } catch { return 6; }
+        return 5 + (hc % 6); // 5..10
+      } catch { return 7; }
     })();
-    const shouldGen = dialogueIndex > 0 && (dialogueIndex % interval === 0);
+    const last = lastChoiceIdxRef.current;
+    const distance = dialogueIndex - (Number.isInteger(last) ? last : -1);
+    const shouldGen = dialogueIndex > 0 && distance >= interval;
     if (!shouldGen) return;
     if (aiChoices[dialogueIndex]) return; // already have choices
     if (aiChoicesLoadingRef.current.has(dialogueIndex)) return; // in-flight
@@ -970,6 +978,7 @@ function AppInner() {
         const data = await r.json();
         if (data && Array.isArray(data.choices) && data.choices.length) {
           setAiChoices(prev => ({ ...prev, [dialogueIndex]: data.choices }));
+          lastChoiceIdxRef.current = dialogueIndex;
         }
       } catch {}
       finally {
