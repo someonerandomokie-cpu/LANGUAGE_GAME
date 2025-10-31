@@ -667,10 +667,14 @@ function AppInner() {
       try {
         const origin = window.location.origin.replace(/\/$/, '');
         const u = new URL(origin);
-        if ((u.hostname === 'localhost' || u.hostname === '127.0.0.1') && u.port && u.port !== '8888') {
+        const host = u.hostname;
+        // In development, prefer the local server
+        if ((host === 'localhost' || host === '127.0.0.1') && u.port && u.port !== '8888') {
           return 'http://127.0.0.1:8888';
         }
-        return origin;
+        // In production (e.g., GitHub Pages), require VITE_BACKEND_URL; do not default to same-origin
+        // This prevents pointing to the static Pages origin which cannot serve the API.
+        return '';
       } catch {}
     }
     return '';
