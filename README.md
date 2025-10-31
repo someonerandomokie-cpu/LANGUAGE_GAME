@@ -88,7 +88,7 @@ Prereqs
 
 ## What’s implemented per requirements
 - Strategic choices only when replying to non-user, with at least 2–3 target-language options; no English choices
-- ≥100 dialogue pages per episode (padded if needed)
+- 100 dialogue pages per episode (padded if needed)
 - PlotState continuity across episodes (tone + recent decisions)
 - Plot page countdown from 3 seconds; first plot auto-generated
 - Vocab highlighting for target language only with 5s translation popup
