@@ -1,6 +1,6 @@
 ## LangVoyage — interactive language learning through story
 
-A React + Vite single-page app with an optional Node/Express backend that generates short, punchy plots and 100-line interactive dialogues using an LLM provider. By default it can use OpenAI. Choices appear at important moments only (about every 5 lines) and are in the target language with no English options. Lessons teach a small vocab pack with TTS.
+A React + Vite single-page app with an optional Node/Express backend that generates stories and 100-line interactive dialogues using an LLM provider for users learning any of 15 existing languages. By default it can use OpenAI. Choices appear at important moments (every 5-7 lines). They can be in the target language with no English options; as plot-changing options; simple random options. Lessons teach a small vocab pack with TTS.
 
 Key features
 - Avatar creation, genres (up to 3), language selection
