@@ -1,0 +1,10 @@
+const path = require('path');
+const dotenv = require('dotenv');
+const r1 = dotenv.config({ override: true });
+const r2 = dotenv.config({ path: path.resolve(__dirname, '../server/.env'), override: true });
+const keys1 = r1 && r1.parsed ? Object.keys(r1.parsed) : [];
+const keys2 = r2 && r2.parsed ? Object.keys(r2.parsed) : [];
+console.log('dotenv root keys:', keys1);
+console.log('dotenv server/.env keys:', keys2);
+console.log('has OPENAI', !!process.env.OPENAI_API_KEY, 'len', (process.env.OPENAI_API_KEY||'').length);
+console.log('has REPLICATE', !!process.env.REPLICATE_API_TOKEN, 'len', (process.env.REPLICATE_API_TOKEN||'').length);

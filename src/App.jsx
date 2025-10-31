@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { AvatarProvider, useAvatar } from './context/AvatarContext.jsx';
 import ThreeAvatarViewer from './components/ThreeAvatarViewer.jsx';
+import DialogueScene from './components/DialogueScene.jsx';
 import StoryBackground, { analyzeStoryContext } from './StoryBackground.jsx';
 import { useChoiceManager } from './hooks/useChoiceManager';
 import ChoiceManager from './components/ChoiceManager.jsx';
@@ -179,7 +180,7 @@ const creatorStyles = {
 };
 
 function AppInner() {
-  const { avatarUrl, saveAvatar } = useAvatar();
+  const { avatarUrl, buddyUrl, saveAvatar, setBuddyUrl, loadFromStorage, generateNPCs, setNpcAvatar, npcAvatars } = useAvatar();
   // Remove avatar.avatarUrl from local state, use context avatarUrl everywhere
   const [avatar, setAvatar] = useState({ id: 'user_001', name: '', appearance: {}, traits: [], hobbies: [] });
   const rpmIframeRef = useRef(null);
@@ -191,8 +192,7 @@ function AppInner() {
   const pendingRpmExportRef = useRef(false);
   // Timeout guard when user presses Save before RPM frame is ready
   const rpmReadyTimeoutRef = useRef(null);
-  // Buddy avatar state (Ready Player Me)
-  const [buddyAvatarUrl, setBuddyAvatarUrl] = useState('');
+  // Buddy avatar URL comes from context (buddyUrl)
   const buddyRpmIframeRef = useRef(null);
   const [buddyRpmSaving, setBuddyRpmSaving] = useState(false);
   const [buddyRpmSaveError, setBuddyRpmSaveError] = useState('');
@@ -220,6 +220,8 @@ function AppInner() {
   const [vocabPack, setVocabPack] = useState([]);
   const [lessonPhrases, setLessonPhrases] = useState([]);
   const [quizItems, setQuizItems] = useState([]);
+  const [lessonLoading, setLessonLoading] = useState(false);
+  const [lessonError, setLessonError] = useState('');
   const [quizResults, setQuizResults] = useState([]); // whether a question has been answered correct (ever)
   const [firstTryResults, setFirstTryResults] = useState([]); // track first-try correctness (true/false/null)
   const [showConfetti, setShowConfetti] = useState(false);
@@ -241,6 +243,8 @@ function AppInner() {
   // Backgrounds state for BackgroundSwitcher
   const [backgroundImages, setBackgroundImages] = useState([]); // array of { url, prompt, cached, idx }
   const [bgActiveIndex, setBgActiveIndex] = useState(0);
+  // Track which dialogue indices we've already requested images for (to avoid duplicate calls)
+  const requestedBgIndicesRef = useRef(new Set());
 
   // Kick off background generation when entering quiz
   useEffect(() => {
@@ -290,6 +294,7 @@ function AppInner() {
           ].map(i => Math.min(total - 1, Math.max(0, i)));
           const uniq = Array.from(new Set(candidateIndices)).filter(i => padded[i] && padded[i].text && padded[i].text.length > 10);
 
+          const backend = getBackendBase();
           for (let idx of uniq.slice(0, 3)) {
             try {
               const sampleLine = padded[idx].text.slice(0, 220); // short excerpt for prompt
@@ -300,12 +305,18 @@ function AppInner() {
                 role: 'dialogue',
                 dialogText: sampleLine,
                 avatarName: avatar.name || '',
-                buddyName: buddyName || ''
+                buddyName: buddyName || '',
+                // Seedream 4 preferences
+                size: '2K',
+                aspect_ratio: '4:3',
+                enhance_prompt: true,
+                sequential_image_generation: 'disabled',
+                max_images: 1
               };
               // Use utils helper if present, otherwise inline fetch
               let dataResp;
               try {
-                dataResp = await fetch('/api/generate-image', {
+                dataResp = await fetch(`${backend}/api/generate-image`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(body)
@@ -318,7 +329,8 @@ function AppInner() {
                 continue;
               }
               if (dataResp && dataResp.url) {
-                images.push({ idx, url: dataResp.url, prompt: dataResp.prompt, cached: !!dataResp.cached });
+                const absoluteUrl = String(dataResp.url || '').startsWith('http') ? dataResp.url : (backend ? `${backend}${dataResp.url}` : dataResp.url);
+                images.push({ idx, url: absoluteUrl, prompt: dataResp.prompt, cached: !!dataResp.cached });
               }
             } catch (imgErr) {
               console.warn('Prefetch image generation error for index', idx, imgErr);
@@ -392,6 +404,134 @@ function AppInner() {
     })();
   }, [screen, prefetch.dialogues]);
 
+  // If we reached the dialogue screen without prefetched images, generate a few backgrounds on-demand
+  useEffect(() => {
+    if (screen !== 'dialogue') return;
+    if (!Array.isArray(storyDialogues) || storyDialogues.length === 0) return;
+    // If we already have images, no need to auto-generate here
+    if (Array.isArray(backgroundImages) && backgroundImages.length > 0) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const total = storyDialogues.length;
+        const candidateIndices = [
+          Math.floor(total * 0.10),
+          Math.floor(total * 0.50),
+          Math.floor(total * 0.90)
+        ].map(i => Math.min(total - 1, Math.max(0, i)));
+        const uniq = Array.from(new Set(candidateIndices));
+        const backend = getBackendBase();
+        const nextImages = [];
+        for (const idx of uniq) {
+          if (cancelled) break;
+          if (requestedBgIndicesRef.current.has(idx)) continue;
+          requestedBgIndicesRef.current.add(idx);
+          try {
+            const sampleLine = (storyDialogues[idx]?.text || '').slice(0, 220);
+            const body = {
+              plot: plotSummary,
+              lang: language || 'English',
+              genre: (genres && genres[0]) || '',
+              role: 'dialogue',
+              dialogText: sampleLine,
+              avatarName: avatar.name || '',
+              buddyName: buddyName || '',
+              size: '2K',
+              aspect_ratio: '4:3',
+              enhance_prompt: true,
+              sequential_image_generation: 'disabled',
+              max_images: 1
+            };
+            const r = await fetch(`${backend}/api/generate-image`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+            if (!r.ok) continue;
+            const dataResp = await r.json();
+            if (dataResp && dataResp.url) {
+              const absoluteUrl = String(dataResp.url || '').startsWith('http') ? dataResp.url : `${backend}${dataResp.url}`;
+              nextImages.push({ idx, url: absoluteUrl, prompt: dataResp.prompt, cached: !!dataResp.cached });
+            }
+          } catch (e) {
+            // ignore and continue
+          }
+        }
+        if (!cancelled && nextImages.length) {
+          setBackgroundImages(prev => {
+            const seen = new Set((prev || []).map(p => p.url));
+            const merged = [...(prev || [])];
+            for (const ni of nextImages) {
+              if (!seen.has(ni.url)) merged.push(ni);
+            }
+            return merged;
+          });
+        }
+      } catch {}
+    })();
+
+    return () => { cancelled = true; };
+  }, [screen, storyDialogues, language, genres, plotSummary, avatar?.name, buddyName, backgroundImages && backgroundImages.length]);
+
+  // Pre-generate and cache NPC avatars for named speakers (excluding player and buddy)
+  useEffect(() => {
+    if (screen !== 'dialogue') return;
+    if (!Array.isArray(storyDialogues) || storyDialogues.length === 0) return;
+    const userName = (avatar?.name || '').trim().toLowerCase();
+    const buddyLower = (buddyName || '').trim().toLowerCase();
+
+    // Heuristic RPM quick-start URL so every character has an immediate avatar
+    function quickStartUrlFor(name) {
+      const gender = /[aeiy]$/i.test(name) ? 'female' : 'male';
+      return `https://readyplayer.me/avatar?quickStart&bodyType=fullbody&gender=${gender}&frameApi`;
+    }
+
+    try {
+      const seen = new Set();
+      const allNames = [];
+      for (const d of storyDialogues) {
+        const raw = (d?.speaker || '').trim();
+        if (!raw) continue;
+        const low = raw.toLowerCase();
+        // Exclude explicit user synonyms; include buddy and all other named NPCs
+        if (low === userName || low === 'you' || low === 'player' || low === 'protagonist' || low === 'narrator') continue;
+        if (seen.has(low)) continue;
+        seen.add(low);
+        allNames.push(raw);
+      }
+
+      // Always map the buddy name to buddyUrl if available
+      if (buddyName && buddyUrl && !npcAvatars[buddyName]) {
+        setNpcAvatar(buddyName, buddyUrl);
+      }
+
+      // Ensure every encountered NPC has at least a quick-start avatar immediately
+      const missing = allNames.filter(n => !npcAvatars?.[n]);
+      missing.forEach((name) => {
+        setNpcAvatar(name, quickStartUrlFor(name));
+      });
+
+      // Optionally kick off a background batch generation to replace quick-starts with exported GLBs
+      if (missing.length > 0) {
+        (async () => {
+          try {
+            const batch = missing.map((name, idx) => ({ id: `npc-${encodeURIComponent(name)}`, seed: `npc-${name}-${Date.now()}-${idx}` }));
+            const results = await generateNPCs(batch);
+            (results || []).forEach(r => {
+              if (r && r.url) {
+                const original = decodeURIComponent((r.characterId || '').replace(/^npc-/, '')) || r.characterId;
+                if (original) setNpcAvatar(original, r.url);
+              }
+            });
+          } catch (e) {
+            // Silent fallback — quick-start URLs remain in place
+            console.warn('NPC batch generation failed; using quick-start URLs', e?.message || e);
+          }
+        })();
+      }
+    } catch {}
+  }, [screen, storyDialogues, avatar?.name, buddyName, buddyUrl, npcAvatars]);
+
   const [plotGenerating, setPlotGenerating] = useState(false);
   const [plotTimer, setPlotTimer] = useState(0);
   const [plotError, setPlotError] = useState('');
@@ -460,7 +600,7 @@ function AppInner() {
       rpmExportAttemptsRef.current = 0;
       sendExport();
       rpmExportRetryRef.current = setInterval(() => {
-        if (avatar.avatarUrl) {
+        if (avatarUrl) {
           clearInterval(rpmExportRetryRef.current);
           rpmExportRetryRef.current = null;
           return;
@@ -496,7 +636,7 @@ function AppInner() {
       buddyRpmExportAttemptsRef.current = 0;
       sendExport();
       buddyRpmExportRetryRef.current = setInterval(() => {
-        if (buddyAvatarUrl) {
+        if (buddyUrl) {
           clearInterval(buddyRpmExportRetryRef.current);
           buddyRpmExportRetryRef.current = null;
           return;
@@ -542,12 +682,12 @@ function AppInner() {
     return '';
   }
 
-  // Centralized avatar persistence (adds /api/saveAvatar POST)
+  // Centralized avatar persistence (adds /api/save-avatar POST)
   async function saveAvatarToBackend(userId, avatarUrl) {
     try {
       const backend = getBackendBase();
       if (!backend) return;
-      await fetch(`${backend}/api/saveAvatar`, {
+      await fetch(`${backend}/api/save-avatar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, avatarUrl })
@@ -582,32 +722,31 @@ function AppInner() {
       setStats(prev => ({ ...prev, streak: Math.max(1, prev.streak || 1) }));
     }
 
-    // On mount, try to fetch any previously saved avatar for this user
+    // On mount, load from storage and try to fetch any previously saved avatar for this user
     (async () => {
       try {
+        try { loadFromStorage(); } catch {}
         const userId = (avatar && avatar.id) || 'user_001';
         const backend = getBackendBase();
-        const r = await fetch(`${backend}/api/user-avatar?userId=${encodeURIComponent(userId)}`);
-        if (r.ok) {
-          const data = await r.json();
-          if (data && data.avatarUrl) {
-            setAvatar(prev => ({ ...prev, avatarUrl: data.avatarUrl }));
-            return;
-          }
+        if (backend) {
+          try {
+            const r = await fetch(`${backend}/api/user-avatar?userId=${encodeURIComponent(userId)}`);
+            if (r.ok) {
+              const data = await r.json();
+              if (data && data.avatarUrl) {
+                saveAvatar(data.avatarUrl, { userId });
+              }
+            }
+          } catch {}
+          // Also fetch buddy avatar if present
+          try {
+            const rb = await fetch(`${backend}/api/user-avatar?userId=${encodeURIComponent('buddy_001')}`);
+            if (rb.ok) {
+              const db = await rb.json();
+              if (db && db.avatarUrl) setBuddyUrl(db.avatarUrl, { persist: true, buddyId: 'buddy_001' });
+            }
+          } catch {}
         }
-        // Fallback to localStorage if backend has none
-        try {
-          const ls = localStorage.getItem('rpm_avatar_url') || localStorage.getItem('langvoyage_user_avatar_url') || localStorage.getItem('langvoyage_avatar');
-          if (ls) setAvatar(prev => ({ ...prev, avatarUrl: ls }));
-        } catch {}
-        // Also fetch buddy avatar if present
-        try {
-          const rb = await fetch(`${backend}/api/user-avatar?userId=${encodeURIComponent('buddy_001')}`);
-          if (rb.ok) {
-            const db = await rb.json();
-            if (db && db.avatarUrl) setBuddyAvatarUrl(db.avatarUrl);
-          }
-        } catch {}
       } catch (e) {
         console.warn('Failed to fetch saved avatar', e);
       }
@@ -668,12 +807,11 @@ function AppInner() {
           const fromUser = rpmIframeRef.current && event.source === rpmIframeRef.current.contentWindow;
           const fromBuddy = buddyRpmIframeRef.current && event.source === buddyRpmIframeRef.current.contentWindow;
           if (fromUser) {
-            setAvatar(prev => ({ ...prev, avatarUrl: url }));
-            // Persist to backend so it survives across gameplay
+            // Persist to context/backend so it survives across gameplay
             (async () => {
               try {
                 const userId = (avatar && avatar.id) || 'user_001';
-                await saveAvatarToBackend(userId, url);
+                saveAvatar(url, { userId });
               } catch (e) {
                 console.warn('Failed to save avatar to backend', e);
               }
@@ -685,8 +823,8 @@ function AppInner() {
             setScreen('avatar');
           }
           if (fromBuddy) {
-            setBuddyAvatarUrl(url);
-            // Persist buddy avatar with a fixed buddy id
+            setBuddyUrl(url, { persist: true, buddyId: 'buddy_001' });
+            // Persist buddy avatar with a fixed buddy id (redundant safety)
             (async () => {
               try {
                 const userId = 'buddy_001';
@@ -835,7 +973,7 @@ function AppInner() {
   // When plot is available, auto-generate buddy avatar in the background (no user design)
   useEffect(() => {
     if (!plotSummary) return;
-    if (buddyAvatarUrl || isGeneratingBuddy) return;
+  if (buddyUrl || isGeneratingBuddy) return;
     beginBuddyAutoGen();
   }, [plotSummary]);
 
@@ -856,7 +994,17 @@ function AppInner() {
           const r = await fetch(`${backend}/api/generate-image`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ plot: plotSummary, lang: language, genres })
+            body: JSON.stringify({
+              plot: plotSummary,
+              lang: language,
+              genre: (genres && genres[0]) || '',
+              // Seedream 4 preferences for plot image
+              size: '2K',
+              aspect_ratio: '4:3',
+              enhance_prompt: true,
+              sequential_image_generation: 'disabled',
+              max_images: 1
+            })
           });
           if (cancelled) return;
           if (r.ok) {
@@ -881,22 +1029,32 @@ function AppInner() {
     return () => { cancelled = true; };
   }, [screen, plotSummary, language]);
 
-  // Apply prefetched images: manage BackgroundSwitcher images + active index
+  // Apply images only on the plot page; avoid showing generated images on other pages
   useEffect(() => {
-    // Build array of urls from prefetch images or fall back to plotImageUrl
-    if (prefetch && Array.isArray(prefetch.images) && prefetch.images.length) {
-      const imgs = prefetch.images.map(i => ({ url: i.url, prompt: i.prompt, cached: !!i.cached, idx: i.idx }));
-      setBackgroundImages(imgs);
-      if (screen === 'plot') setBgActiveIndex(0);
-      return;
+    if (screen === 'plot') {
+      if (prefetch && Array.isArray(prefetch.images) && prefetch.images.length) {
+        const imgs = prefetch.images.map(i => ({ url: i.url, prompt: i.prompt, cached: !!i.cached, idx: i.idx }));
+        setBackgroundImages(imgs);
+        setBgActiveIndex(0);
+        return;
+      }
+      if (plotImageUrl) {
+        setBackgroundImages([{ url: plotImageUrl, cached: true }]);
+        setBgActiveIndex(0);
+        return;
+      }
+      setBackgroundImages([]);
     }
-    if (plotImageUrl) {
-      setBackgroundImages([{ url: plotImageUrl, cached: true }]);
-      if (screen === 'plot') setBgActiveIndex(0);
-      return;
-    }
-    setBackgroundImages([]);
+    // leave other screens untouched here; dialogue handles its own background adoption
   }, [prefetch, plotImageUrl, screen]);
+
+  // Clear background images when leaving image-using pages (keep during dialogue sequences)
+  useEffect(() => {
+    if (screen !== 'plot' && screen !== 'dialogue') {
+      setBackgroundImages([]);
+      setBgActiveIndex(0);
+    }
+  }, [screen]);
 
   useEffect(() => {
     if (screen !== 'dialogue') return;
@@ -1103,7 +1261,8 @@ function AppInner() {
           throw new Error(msg);
         }
         const data = await r.json();
-        return (data.summary || '').trim();
+        // Accept multiple server shapes: {story}, {summary}, or {text}
+        return (data.story || data.summary || data.text || '').trim();
       }
       throw new Error('No backend configured');
     } catch (e) {
@@ -1137,7 +1296,7 @@ function AppInner() {
 
   function beginBuddyAutoGen() {
     try {
-      if (isGeneratingBuddy || buddyAvatarUrl) return;
+      if (isGeneratingBuddy || buddyUrl) return;
       setBuddyGenError('');
       setIsGeneratingBuddy(true);
       // Create hidden iframe and kick off export on frame.ready
@@ -1154,13 +1313,13 @@ function AppInner() {
       buddyPendingRpmExportRef.current = true;
       setBuddyRpmFrameReady(false);
       setBuddyRpmSaving(true);
-      // Fallback: if export doesn't arrive in 12s, use user's avatar or a public sample model
+      // Fallback: if export doesn't arrive in 12s, use user's avatar; avoid astronaut placeholder
       if (buddyFallbackTimerRef.current) { clearTimeout(buddyFallbackTimerRef.current); }
       buddyFallbackTimerRef.current = setTimeout(() => {
-        if (!buddyAvatarUrl) {
-          const sample = 'https://modelviewer.dev/shared-assets/models/Astronaut.glb';
-          const fallback = avatar?.avatarUrl || sample;
-          setBuddyAvatarUrl(fallback);
+        if (!buddyUrl) {
+          if (avatarUrl) {
+            setBuddyUrl(avatarUrl, { persist: true, buddyId: 'buddy_001' });
+          }
           setIsGeneratingBuddy(false);
           setBuddyRpmSaving(false);
           try {
@@ -1188,8 +1347,8 @@ function AppInner() {
           body: JSON.stringify({ plot, avatarData, buddy, lang, vocabPack: vp, plotState: ps })
         });
         if (!r.ok) throw new Error('Backend dialogues failed');
-        const data = await r.json();
-        const txt = data.content || '';
+  const data = await r.json();
+  const txt = data.content || data.text || '';
         // Parse same as below
         const lines = txt.trim().split('\n').filter(l => l.trim()).map(l => l.trim());
         const dialogues = [];
@@ -1223,9 +1382,10 @@ function AppInner() {
           if (new RegExp(`^${buddy}\s*$`, 'i').test(speaker)) speaker = buddy;
           currentDialogue = { speaker, text, choices: null, isFinalLine: false, setting: undefined };
         });
-        if (currentDialogue) { if (collectingChoices && choicesList.length) currentDialogue.choices = choicesList; dialogues.push(currentDialogue); }
-        if (dialogues.length > 0) { dialogues[dialogues.length - 1].isFinalLine = true; dialogues[dialogues.length - 1].setting = 'The moment hangs in the air, charged with possibility.'; }
-        return dialogues;
+  if (currentDialogue) { if (collectingChoices && choicesList.length) currentDialogue.choices = choicesList; dialogues.push(currentDialogue); }
+  if (dialogues.length > 0) { dialogues[dialogues.length - 1].isFinalLine = true; dialogues[dialogues.length - 1].setting = 'The moment hangs in the air, charged with possibility.'; }
+  const cleaned = canonicalizeCast(dialogues, avatarData.name, buddy);
+  return cleaned;
       }
       throw new Error('No backend configured');
     } catch (e) {
@@ -1235,170 +1395,88 @@ function AppInner() {
   }
 
   function aiGenerateDialogues({ plot, avatarData, buddy, lang, vocabPack: vp = [] }) {
-    // Produce 100 dialogue lines that expand the generated plot into character voices.
+    // Programmatic, varied 100-line dialogue with a stable cast and periodic choices
     const aName = avatarData.name || 'Traveler';
     const bName = buddy || 'Buddy';
-    const locals = ['Vendor', 'Old Friend', 'Mysterious Caller', 'Shop Owner', 'Street Musician', 'Guide', 'Child', 'Elder', 'Tourist', 'Artist'];
-    const dialogues = [];
-    
-    // Opening sequence (no immediate choice - let story flow first)
-    dialogues.push({ speaker: bName, text: `Hey ${aName}, did you see the mural by the harbor? There's a symbol there that looks like your family crest.` });
-    dialogues.push({ speaker: aName, text: `I thought I recognized something... I can't read the name on it, but it feels familiar.` });
-    
-    // Build out 100 dialogue lines with varied speakers and moments
-    const vocabWords = vp.map(v => v.word).filter(Boolean);
-    const storyBeats = [
-      `You two shouldn't be asking about that. Some things are better left buried.`,
-      `Don't listen to them. Come with me — there's a friend who can translate old letters.`,
-      `Alright. If this leads to a clue about my past, I'm ready.`,
-      `The map shows a place I've never heard of. Have you?`,
-      `My family told stories about this neighborhood. I never thought I'd see it.`,
-      `There's an old library near the square. Maybe we'll find records there.`,
-      `Wait—someone's following us. Let's take a different route.`,
-      `This street smells like cinnamon and rain. It reminds me of home.`,
-      `Look at that door. The symbol matches the one from the harbor.`,
-      `Should we knock? Or is this too dangerous?`,
-      `I hear voices inside. They're speaking quickly—I can't catch everything.`,
-      `The door opens. An elder appears, eyes narrowing at us.`,
-      `They recognize your name. How is that possible?`,
-      `Come inside, quickly. We don't have much time.`,
-      `The room is filled with old photographs and maps.`,
-      `This photo... it looks like my grandmother.`,
-      `She was part of a network that helped travelers decades ago.`,
-      `Your family has history here. More than you know.`,
-      `There's a letter addressed to you. It's been waiting twenty years.`,
-      `I'm afraid to open it. What if it changes everything?`,
-      `Sometimes the truth is harder than the mystery. But you deserve to know.`,
-      `The letter speaks of a hidden place, a meeting point for old friends.`,
-      `We should go there tonight. Before anyone else finds out.`,
-      `I trust you. Let's do this together.`,
-      `The night market is loud and bright. We blend into the crowd.`,
-      `A musician plays a song I know. My mother used to hum it.`,
-      `Do you remember the tune? It's beautiful.`,
-      `I remember it from a dream. Or maybe a memory.`,
-      `We're close now. The meeting place is just beyond the fountain.`,
-      `There's a small door under the bridge. Almost hidden.`,
-      `Should we really go in? This feels like crossing a line.`,
-      `We've come this far. I need to see what's inside.`,
-      `The door creaks open. A narrow staircase leads down.`,
-      `It's dark. I'll light the way with my phone.`,
-      `The walls are covered in writing. Names, dates, messages.`,
-      `A musician plays a song I know. My mother used to hum it.`,
-      `Do you remember the tune? It's beautiful.`,
-      `I remember it from a dream. Or maybe a memory.`,
-      `We're close now. The meeting place is just beyond the fountain.`,
-      `There's a small door under the bridge. Almost hidden.`,
-      `Should we really go in? This feels like crossing a line.`,
-      `We've come this far. I need to see what's inside.`,
-      `The door creaks open. A narrow staircase leads down.`,
-      `It's dark. I'll light the way with my phone.`,
-      `The walls are covered in writing. Names, dates, messages.`,
-      `Look—your family name is here, carved into the stone.`,
-      `This place is a sanctuary. A refuge for those who needed it.`,
-      `I feel connected to something bigger than myself.`,
-      `Footsteps above. Someone else is coming.`,
-      `Hide. We don't know who it is.`,
-      `It's the elder from before. They followed us.`,
-      `Don't be afraid. I came to help you understand.`,
-      `This place holds the memories of many who came before you.`,
-      `Your ancestors protected this space. And now it's your turn.`,
-      `What do you mean, my turn?`,
-      `There's a choice to make. To carry forward the legacy, or to walk away.`,
-      `I never asked for this responsibility.`,
-      `No one does. But it finds those who are ready.`,
-      `I need time to think. This is overwhelming.`,
-      `Take your time. But know that the world outside is changing fast.`,
-      `We leave the hidden place and walk back through the market.`,
-      `The city feels different now. Like I'm seeing it with new eyes.`,
-      `Do you regret coming here? Learning all of this?`,
-      `I don't know yet. But I'm glad I'm not alone.`,
-      `We stop at a small café. The owner greets us warmly.`,
-      `They seem to know who you are, even without introductions.`,
-      `Word travels fast in this neighborhood.`,
-      `What will you do next?`,
-      `I think I'll stay a while. There's more to learn here.`,
-      `And maybe more to uncover about my own past.`,
-      `I'll help you. Whatever you need.`,
-      `Thank you. That means more than you know.`,
-      `The café owner brings us tea and a small pastry.`,
-      `This tastes like something my grandmother used to make.`,
-      `Recipes carry memory. Like language, like songs.`,
-      `I want to learn more. About the food, the stories, everything.`,
-      `Then let's start now. There's a cooking class tomorrow morning.`,
-      `I'll be there. It feels right to dive in.`,
-      `The evening fades into night. The streets glow with lanterns.`,
-      `This city is alive. I can feel it breathing.`,
-      `It's strange to think I almost didn't come here.`,
-      `Some journeys choose us as much as we choose them.`,
-      `We walk past the harbor again. The mural is lit by moonlight.`,
-      `It looks different now. Like it's telling a fuller story.`,
-      `Because now you know your place in it.`,
-      `I wonder what my ancestors would think of me being here.`,
-      `I think they'd be proud. You're honoring their path.`,
-      `There's a festival next week. Will you still be here?`,
-      `I plan to be. I want to see it through.`,
-      `Good. Festivals are when the city truly comes alive.`,
-      `A street vendor offers us roasted chestnuts. The smell is intoxicating.`,
-      `Simple moments like this—they're what I'll remember most.`,
-      `We find a bench near the water and sit in comfortable silence.`,
-      `The waves lap gently against the stone. Rhythmic, calming.`,
-      `I've been running from my past for so long. Maybe it's time to stop.`,
-      `Sometimes standing still is the bravest thing you can do.`,
-      `I think I'm ready. Ready to embrace this.`,
-      `Then tomorrow, we begin the next chapter.`,
-      `A boat passes by, its lights reflecting on the dark water.`,
-      `Do you ever wonder where all these people are going?`,
-      `Everyone has a story. A reason for being here.`,
-      `And now I have mine too.`,
-      `The night deepens. The city hums with life.`,
-      `I'm grateful for this moment. For meeting you, for all of it.`,
-      `The feeling is mutual. This journey has changed me too.`,
-      `We should head back. Tomorrow will come quickly.`,
-      `One more minute. I want to hold onto this feeling.`,
-      `The stars above are faint, barely visible through the city glow.`,
-      `But they're there. Constant, even when we can't see them clearly.`,
-      `Like the threads that connect us to our past. Always present.`,
-      `We stand and walk slowly back through the winding streets.`,
-      `The night air is cool. Refreshing after the warmth of the day.`,
-      `I'll see you tomorrow, then. At the cooking class.`
-    ];
-    
-    storyBeats.forEach((line, i) => {
-      const speakerIndex = i % (locals.length + 2);
-      let speaker;
-      if (speakerIndex === 0) speaker = bName;
-      else if (speakerIndex === 1) speaker = aName;
-      else speaker = locals[(speakerIndex - 2) % locals.length];
-      
-      // Add strategic vocabulary choices every ~5 lines at key moments
-      const shouldAddChoice = vp.length > 0 && i > 0 && i % 5 === 0 && i < 95;
+    const country = LANGUAGE_COUNTRY[lang] || `${lang}-speaking country`;
+    const city = COUNTRY_CITY[country] || 'the capital';
+    const npcs = ['Vendor', 'Elder', 'Guide'];
+    const cast = [aName, bName, ...npcs];
+    const lines = [];
+    const vocab = (Array.isArray(vp) ? vp.map(v => v && v.word).filter(Boolean) : []);
+    for (let i = 0; i < 98; i++) {
+      const who = cast[i % cast.length];
+      const beat = i % 9;
+      let text;
+      switch (beat) {
+        case 0: text = `The crowd shifts in ${city}. I saw that symbol again.`; break;
+        case 1: text = `If we follow the side street, we might reach the old square faster.`; break;
+        case 2: text = `Smells like cinnamon and coffee. This place feels alive.`; break;
+        case 3: text = `A note tucked under the bench—was it meant for us?`; break;
+        case 4: text = `That mural… I’m sure it hides a hint about your family.`; break;
+        case 5: text = `Someone is watching. Don’t look back—just keep walking.`; break;
+        case 6: text = `There’s a library near here. Records of people who came and went.`; break;
+        case 7: text = `Listen. That song—the rhythm matches the dates in the letter.`; break;
+        default: text = `We’re close. The next turn should reveal the meeting point.`; break;
+      }
+      if (i % 7 === 0) text += ` Locals in ${country} keep stories in quiet places.`;
+      // Occasionally weave a target-language word into the English line naturally
+      if (vocab.length && i % 8 === 0) {
+        const w = vocab[Math.floor(i / 8) % vocab.length];
+        text += ` Maybe say "${w}" when we ask for help.`;
+      }
       let choices = null;
-      if (shouldAddChoice) {
-        const baseIndex = Math.floor(i / 5) % vp.length;
-        const picks = [vp[baseIndex], vp[(baseIndex + 1) % vp.length], vp[(baseIndex + 2) % vp.length]].filter(Boolean);
+      if (vp.length && i > 0 && i % 5 === 0) {
+        const base = Math.floor(i / 5) % vp.length;
+        const picks = [vp[base], vp[(base + 1) % vp.length], vp[(base + 2) % vp.length]].filter(Boolean);
         if (picks.length) {
           const tones = ['friendly', 'neutral', 'bold'];
-          choices = picks.slice(0, 3).map((v, idx) => ({
-            text: `Say: "${v.word}"`,
-            practiceWord: v.word,
-            effect: { tone: tones[idx % tones.length] },
-            nextDelta: 1
-          }));
+          // Include one vocab "Say:" option if it fits, plus sensible plot choices
+          const sayOpt = { text: `Say: "${picks[0].word}"`, practiceWord: picks[0].word, effect: { tone: tones[0] }, nextDelta: 1 };
+          const planOpt = { text: 'Make a plan to check the next alley', nextDelta: 1 };
+          const askOpt = { text: `Ask ${bName} about the note we found`, nextDelta: 1 };
+          choices = [sayOpt, planOpt, askOpt];
         }
       }
-      
-      dialogues.push({
-        speaker,
-        text: line,
-        choices: choices
-      });
-    });
-    
-    // Final line with tone/setting only
-    dialogues.push({ speaker: aName, text: `Tomorrow. I'm ready.`, isFinalLine: true, setting: 'The streetlights flicker as a soft breeze carries the scent of jasmine through the narrow alley.' });
-    
-    return dialogues;
+      lines.push({ speaker: who, text, choices });
+    }
+    lines.push({ speaker: aName, text: 'Tomorrow. I’m ready.', isFinalLine: true, setting: 'Streetlights reflect on the wet stone.' });
+    return canonicalizeCast(lines, aName, bName);
   }
+
+  function canonicalizeCast(dialogues, aName, bName) {
+    // Enforce stable cast and clean duplicates
+    const allowed = new Set([normalizeSpeakerName(aName), normalizeSpeakerName(bName), 'vendor', 'elder', 'guide']);
+    const nameMap = new Map();
+    function clean(name) {
+      if (!name) return 'Narrator';
+      const n = String(name).trim();
+      const low = normalizeSpeakerName(n);
+      if (low === 'you' || low === 'player' || low === 'protagonist') return aName;
+      if (low === 'buddy' || low === 'friend') return bName;
+      if (low === normalizeSpeakerName(aName)) return aName;
+      if (low === normalizeSpeakerName(bName)) return bName;
+      if (allowed.has(low)) return capitalize(n);
+      const bucket = ['Vendor','Elder','Guide'][Math.abs(hashCode(low)) % 3];
+      if (!nameMap.has(low)) nameMap.set(low, bucket);
+      return nameMap.get(low);
+    }
+    const out = [];
+    let prevText = '';
+    for (const d of dialogues) {
+      const speaker = clean(d.speaker);
+      const text = String(d.text || '').trim();
+      if (!text) continue;
+      if (text === prevText) continue;
+      prevText = text;
+      out.push({ ...d, speaker, text });
+    }
+    if (out.length) out[out.length - 1].isFinalLine = true;
+    return out;
+  }
+
+  function capitalize(s) { try { return s.charAt(0).toUpperCase() + s.slice(1); } catch { return s; } }
+  function hashCode(str) { let h = 0; for (let i = 0; i < str.length; i++) { h = (h<<5) - h + str.charCodeAt(i); h|=0; } return h; }
   function acceptPlot() {
     if (!language) return alert('No language selected.');
     console.log('User accepted plot for', language, 'genres', genres);
@@ -1512,6 +1590,8 @@ function AppInner() {
     console.log('Preparing lesson for', lang, 'episode', episodeNum);
     (async () => {
       try {
+        setLessonLoading(true);
+        setLessonError('');
         const backend = getBackendBase();
         let lessonData;
         try {
@@ -1523,10 +1603,25 @@ function AppInner() {
           if (!r.ok) throw new Error('Lesson generation failed');
           lessonData = await r.json();
         } catch (err) {
-          // Local fallback lesson so learner can continue
-          lessonData = aiGenerateLesson({ lang, episodeNum });
+          // Do not use local fallback; require generated lesson per requirements
+          lessonData = null;
         }
-
+        // If the server returned an unexpected shape or empty words, retry once before falling back
+        if (!lessonData || !Array.isArray(lessonData.words) || lessonData.words.length === 0) {
+          try {
+            const r2 = await fetch(`${backend}/api/lesson`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lang, episodeNum })
+            });
+            if (r2.ok) {
+              const j2 = await r2.json();
+              if (j2 && Array.isArray(j2.words) && j2.words.length > 0) lessonData = j2;
+            }
+          } catch {}
+        }
+        if (!lessonData || !Array.isArray(lessonData.words) || lessonData.words.length === 0) {
+          throw new Error('No lesson data');
+        }
         const words = Array.isArray(lessonData.words) ? lessonData.words : [];
         const phrases = Array.isArray(lessonData.phrases) ? lessonData.phrases : [];
         setVocabPack(words);
@@ -1540,23 +1635,11 @@ function AppInner() {
         setQuizItems(q);
         setQuizResults(Array(q.length).fill(null));
         setFirstTryResults(Array(q.length).fill(null));
+        setLessonLoading(false);
       } catch (e) {
         console.warn('Lesson generation failed', e);
-        // As a final fallback, create a minimal lesson to avoid blocking
-        const fallback = aiGenerateLesson({ lang, episodeNum });
-        const words = Array.isArray(fallback.words) ? fallback.words : [];
-        const phrases = Array.isArray(fallback.phrases) ? fallback.phrases : [];
-        setVocabPack(words);
-        setLessonPhrases(phrases);
-        const pool = words;
-        const q = words.map((v, idx) => {
-          const distractors = pool.filter(x => x.meaning !== v.meaning).slice(0, 3).map(d => d.meaning);
-          const choices = [v.meaning, ...distractors].sort(() => Math.random() - 0.5).map(text => ({ text, correct: text === v.meaning }));
-          return { id: `q_${idx}`, prompt: `What does \"${v.word}\" mean?`, choices, userAnswerIndex: null };
-        });
-        setQuizItems(q);
-        setQuizResults(Array(q.length).fill(null));
-        setFirstTryResults(Array(q.length).fill(null));
+        setLessonLoading(false);
+        setLessonError('Failed to generate lesson. Please try again.');
       }
     })();
   }
@@ -1704,12 +1787,12 @@ function AppInner() {
           <input value={avatar.name} onChange={(e) => setAvatar(a => ({ ...a, name: e.target.value }))} placeholder="Enter your name" style={styles.input} />
           {/* Avatar preview + launcher */}
           <div style={{ width: '100%', maxWidth: 1000 }}>
-            {avatar?.avatarUrl ? (
+            {avatarUrl ? (
               <div style={{ display: 'flex', gap: 16, alignItems: 'center', background: 'rgba(255,255,255,0.12)', borderRadius: 16, padding: 16 }}>
                 <div style={{ width: 220, height: 260, borderRadius: 12, overflow: 'hidden', background: '#F1F5F9' }}>
                   {/* Keep model-viewer here for preview, ThreeAvatarViewer can be used instead if desired */}
                   <model-viewer
-                    src={avatar.avatarUrl}
+                    src={avatarUrl}
                     style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
                     crossorigin="anonymous"
                     exposure="1.0"
@@ -1745,11 +1828,9 @@ function AppInner() {
           <AvatarCreator
             onClose={() => setShowAvatarCreator(false)}
             onSaved={(url) => {
-              setAvatar(prev => ({ ...prev, avatarUrl: url }));
               try {
-                // Also persist to backend for continuity, if available
                 const userId = (avatar && avatar.id) || 'user_001';
-                saveAvatarToBackend(userId, url);
+                saveAvatar(url, { userId });
               } catch {}
             }}
           />
@@ -1873,7 +1954,9 @@ function AppInner() {
     return (
       <>
         <BackgroundSwitcher images={backgroundImages} activeIndex={bgActiveIndex} fadeDuration={700} />
-        <div style={{ ...styles.container, background: 'transparent' }}>
+        {/* Add stylized StoryBackground so we never show a blank page while waiting for images */}
+        <StoryBackground city={city} context={analyzeStoryContext(plotSummary || '', {})} />
+  <div style={{ ...styles.container, background: 'transparent', position: 'relative', zIndex: 1 }}>
           <h1 style={styles.title}>Plot summary</h1>
           {plotError && (
             <div style={{ color: '#FFE082', background: 'rgba(0,0,0,0.2)', padding: 10, borderRadius: 10, marginBottom: 10 }}>
@@ -1966,6 +2049,19 @@ function AppInner() {
         <p style={{ color: 'white', fontSize: '1.1rem' }}>Your learning buddy is <strong>{buddyName}</strong> — they will teach you up to 5 new words and grammar.</p>
 
         <div style={{ marginTop: 12, width: '100%', maxWidth: 720 }}>
+          {(lessonLoading || (vocabPack.length === 0)) && (
+            <div style={{ padding: 20, borderRadius: 12, background: 'rgba(255,255,255,0.2)', color: 'white', textAlign: 'center', marginBottom: 12 }}>
+              Generating lesson...
+            </div>
+          )}
+          {(!lessonLoading && lessonError && vocabPack.length === 0) && (
+            <div style={{ padding: 20, borderRadius: 12, background: 'rgba(255,80,80,0.2)', color: 'white', textAlign: 'center', marginBottom: 12 }}>
+              {lessonError}
+              <div style={{ marginTop: 10 }}>
+                <button onClick={() => prepareLesson(language, currentEpisode || 1)} style={{ padding: '10px 16px', borderRadius: 12, border: 'none', background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', color: 'white', fontWeight: 700, cursor: 'pointer' }}>Retry</button>
+              </div>
+            </div>
+          )}
           {vocabPack.map((v, i) => (
             <div key={v.word} style={{ padding: 20, borderRadius: 20, background: 'rgba(255, 255, 255, 0.95)', marginBottom: 15, boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37)', border: '1px solid rgba(255, 255, 255, 0.18)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -2024,7 +2120,7 @@ function AppInner() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 25 }}>
-          <button onClick={() => setScreen('quiz')} style={styles.continueButton}>Continue to Quiz →</button>
+          <button onClick={() => setScreen('quiz')} disabled={lessonLoading || vocabPack.length === 0} style={{ ...styles.continueButton, opacity: (lessonLoading || vocabPack.length === 0) ? 0.5 : 1, cursor: (lessonLoading || vocabPack.length === 0) ? 'not-allowed' : 'pointer' }}>Continue to Quiz →</button>
         </div>
       </div>
     );
@@ -2192,7 +2288,7 @@ function AppInner() {
     const isLastLine = dlg && dlg.isFinalLine;
     const userSpeaking = dlg && isUserSpeaker(dlg);
     const buddySpeaking = dlg && isBuddySpeaker(dlg);
-    const canShowAvatar = Boolean((userSpeaking && avatar?.avatarUrl) || (buddySpeaking && buddyAvatarUrl));
+  const canShowAvatar = Boolean((userSpeaking && avatarUrl) || (buddySpeaking && buddyUrl));
     const country = LANGUAGE_COUNTRY[language] || `${language}-speaking country`;
     const city = COUNTRY_CITY[country] || 'the capital';
     const ctx = analyzeStoryContext(dlg?.text || '', {});
@@ -2230,51 +2326,16 @@ function AppInner() {
             <div style={{ fontSize: 14, color: 'white' }}>{dialogueIndex + 1}/{Math.max(1, storyDialogues.length)}</div>
           </div>
           {dlg ? (
-            <div style={{ background: '#FFFFFF', color: '#111', padding: 20, borderRadius: 12, boxShadow: '0 6px 18px rgba(0,0,0,0.06)' }}>
-              <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-                {canShowAvatar ? (
-                  <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', width: '100%' }} onClick={(e) => e.stopPropagation()}>
-                    {/* Left: speaking character (prominent) */}
-                    <div style={{ width: 220, height: 270, minWidth: 220, borderRadius: 12, overflow: 'hidden', background: '#F1F5F9' }}>
-                      <ThreeAvatarViewer
-                        avatarUrl={userSpeaking ? (avatar.avatarUrl || '') : (buddyAvatarUrl || '')}
-                        width={220}
-                        height={270}
-                        reaction={undefined}
-                      />
-                    </div>
-
-                    {/* Center: dialogue text */}
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 800, marginBottom: 8 }}>{dlg.speaker}</div>
-                      <div style={{ fontSize: 18 }}>{highlightVocab(dlg.text)}</div>
-                      {isLastLine && dlg.setting && (
-                        <div style={{ marginTop: 12, fontSize: 14, fontStyle: 'italic', color: '#64748B' }}>{dlg.setting}</div>
-                      )}
-                    </div>
-
-                    {/* Right: non-speaking avatar (smaller) */}
-                    <div style={{ width: 140, height: 180, minWidth: 140, borderRadius: 12, overflow: 'hidden', background: '#F1F5F9', alignSelf: 'flex-start' }}>
-                      <ThreeAvatarViewer
-                        avatarUrl={userSpeaking ? (buddyAvatarUrl || '') : (avatar.avatarUrl || '')}
-                        width={140}
-                        height={180}
-                        autoRotate={false}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', width: '100%' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 800, marginBottom: 8 }}>{dlg.speaker}</div>
-                      <div style={{ fontSize: 18 }}>{highlightVocab(dlg.text)}</div>
-                      {isLastLine && dlg.setting && (
-                        <div style={{ marginTop: 12, fontSize: 14, fontStyle: 'italic', color: '#64748B' }}>{dlg.setting}</div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+            <div style={{ background: '#FFFFFF', color: '#111', padding: 20, borderRadius: 12, boxShadow: '0 6px 18px rgba(0,0,0,0.06)' }} onClick={(e) => e.stopPropagation()}>
+              {/* New DialogueScene with player (right) and NPCs (left) */}
+              <DialogueScene
+                dialogues={storyDialogues}
+                index={dialogueIndex}
+                userAvatarUrl={avatarUrl}
+                npcAvatars={npcAvatars}
+                playerName={avatar?.name || 'You'}
+                mode={"pair"}
+              />
 
               {/* Interactive choices area (only when choices are explicitly provided) */}
               {!isLastLine && dlg && dlg.choices && dlg.choices.length > 0 && (

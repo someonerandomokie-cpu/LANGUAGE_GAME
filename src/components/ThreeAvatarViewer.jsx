@@ -1,4 +1,4 @@
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useState } from 'react';
 
 /*
  ThreeAvatarViewer.jsx (updated)
@@ -19,9 +19,8 @@ import React, { useEffect, useState, Suspense } from 'react';
     - If Visage import errors (package not installed), the component falls back gracefully and logs a console hint.
 */
 
-const VisageAvatar = React.lazy(() =>
-  import('@readyplayerme/visage').then(mod => ({ default: mod.Avatar }))
-);
+// Visage viewer disabled by default to avoid heavy peer dependencies in dev.
+// If you want to enable it, wire an optional dynamic import behind an env flag.
 
 export default function ThreeAvatarViewer({
   avatarUrl,
@@ -35,7 +34,7 @@ export default function ThreeAvatarViewer({
   reaction = null,
 }) {
   const [canClientRender, setCanClientRender] = useState(false);
-  const [visageAvailable, setVisageAvailable] = useState(true);
+  const [visageAvailable, setVisageAvailable] = useState(false);
   const [animKey, setAnimKey] = useState(0); // bump when reaction changes to restart animation
 
   // Ensure CSS animations are inserted once
@@ -108,58 +107,26 @@ export default function ThreeAvatarViewer({
   // choose wrapper class based on reaction
   const reactionClass = reaction ? `tav-reaction-${reaction}` : '';
 
-  // If there's no avatar URL show placeholder
-  if (!avatarUrl) {
-    return (
-      <div className={className} style={containerStyle} data-position={position}>
-        <div style={{ color: '#64748B', textAlign: 'center', padding: 8 }}>
-          No avatar
-        </div>
-      </div>
-    );
-  }
+  // If there's no avatar URL, render nothing to avoid placeholder boxes in UI
+  if (!avatarUrl) return null;
 
-  // Client rendering: try Visage first (lazy). If Visage import fails, ErrorBoundary will fall back.
+  // Client rendering: use <model-viewer> fallback (Visage optional, disabled by default)
   if (canClientRender) {
     return (
       <div
-        key={animKey} // ensure key changes when reaction changes to retrigger animation in some browsers
+        key={animKey}
         className={`tav-wrapper ${reactionClass} ${className}`}
         style={containerStyle}
         data-position={position}
         aria-live="polite"
       >
-        <Suspense fallback={<div style={{ color: '#64748B' }}>Loading avatar…</div>}>
-          {visageAvailable ? (
-            <ErrorBoundary onError={(err) => {
-              console.warn('Visage import failed or threw at runtime; falling back to model-viewer', err);
-              setVisageAvailable(false);
-            }}>
-              <VisageAvatar
-                modelSrc={avatarUrl}
-                autoRotate={autoRotate}
-                shadowIntensity={0.4}
-                style={{ width: '100%', height: '100%', pointerEvents: 'none' }}
-                // data-reaction attribute is available if you extend the Visage wrapper later
-                data-reaction={reaction || ''}
-              />
-            </ErrorBoundary>
-          ) : (
-            <FallbackModelViewer src={avatarUrl} alt={alt} />
-          )}
-        </Suspense>
+        <FallbackModelViewer src={avatarUrl} alt={alt} />
       </div>
     );
   }
 
   // SSR / safety fallback
-  return (
-    <div className={className} style={containerStyle} data-position={position}>
-      <a href={avatarUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#0b5fff' }}>
-        {alt}
-      </a>
-    </div>
-  );
+  return null;
 }
 
 /* Small helper: fallback that uses <model-viewer> if the page includes it, or an <a> otherwise */

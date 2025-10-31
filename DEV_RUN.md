@@ -13,14 +13,35 @@ Vite + React frontend in `src/App.jsx` and an optional Node/Express backend in `
 2) Environment
 - Create `server/.env` (do NOT commit):
 	- OPENAI_API_KEY=sk-...
-	- PORT=8787
+	- REPLICATE_API_TOKEN=r8_...
 	- ORIGIN=http://localhost:5173
+	- (optional) PORT=8888
 - Optionally create root `.env`:
-	- VITE_BACKEND_URL=http://localhost:8787
+	- VITE_BACKEND_URL=http://localhost:8888
+
+Alternative to OpenAI for plot/dialogues:
+- You can run locally without any cloud keys by using Ollama as the LLM provider.
+- Set `LLM_PROVIDER=ollama` (or leave `OPENAI_API_KEY` empty) and ensure Ollama is running.
+- Optional env vars:
+  - `OLLAMA_URL` (default `http://127.0.0.1:11434`)
+  - `OLLAMA_MODEL` (default `llama3.1:8b`)
+
+Hosted alternative from the public APIs list:
+- Use OpenRouter by setting `LLM_PROVIDER=openrouter` and providing `OPENROUTER_API_KEY`.
+- Optional: `OPENROUTER_MODEL` (default `meta-llama/llama-3.1-8b-instruct:free`), `OPENROUTER_SITE`, `OPENROUTER_TITLE`.
+
+Quick start with Ollama (macOS):
+1) Install Ollama: https://ollama.com/download
+2) Pull a model (example): `ollama pull llama3.1:8b`
+3) Start the backend: it will use Ollama automatically when `OPENAI_API_KEY` is not set.
+4) Check `/api/health` — `llmProvider` will show `"ollama"` when active.
 
 3) Run
-- Terminal A (repo root): npm run server
-- Terminal B (repo root): npm run dev
+- Option A: two terminals
+	- Terminal A (repo root): `npm run server`
+	- Terminal B (repo root): `npm run dev`
+- Option B: one terminal
+	- Terminal (repo root): `npm run dev:full`
 - Open http://localhost:5173
 
 The frontend calls the backend when `VITE_BACKEND_URL` is set; otherwise it will try the client key or fall back to a local generator.

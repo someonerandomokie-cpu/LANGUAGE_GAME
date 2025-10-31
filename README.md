@@ -1,6 +1,6 @@
 ## LangVoyage — interactive language learning through story
 
-A React + Vite single-page app with an optional Node/Express backend that generates short, punchy plots and 100-line interactive dialogues using OpenAI. Choices appear at important moments only (about every 5 lines) and are in the target language with no English options. Lessons teach a small vocab pack with TTS; dialogue screens have TTS disabled.
+A React + Vite single-page app with an optional Node/Express backend that generates short, punchy plots and 100-line interactive dialogues using an LLM provider. By default it can use OpenAI, or you can run locally with Ollama (no cloud keys). Choices appear at important moments only (about every 5 lines) and are in the target language with no English options. Lessons teach a small vocab pack with TTS; dialogue screens have TTS disabled.
 
 Key features
 - Avatar creation, genres (up to 3), language selection
@@ -13,9 +13,10 @@ Key features
 - Continuity via plotState (tone + decisions) fed into the next episode
 - Optional backend proxy to keep API keys server-side: /api/story and /api/dialogues
 
-### Background images (no external AI)
-- The plot and dialogue screens now use locally generated SVG backdrops instead of any AI image generator or external photo service.
-- Images are created procedurally based on the selected city and story context (time of day, mood, weather), so they render instantly and work offline.
+### Background images
+- Backgrounds are generated server-side via Replicate using bytedance/seedream-4 and cached under `public/generated`.
+- Endpoint: POST `/api/generate-image` with inputs like `{ plot, lang, size: '2K', aspect_ratio: '4:3' }`.
+- Requires `REPLICATE_API_TOKEN` in `server/.env`. A fallback endpoint `/api/generate-image-openai` exists if you prefer OpenAI Images.
 
 ## Run locally
 
@@ -29,18 +30,21 @@ Prereqs
   - cd server && npm install
 
 2) Configure environment
-- Create server/.env with your key (never commit this):
-  - OPENAI_API_KEY=sk-...
-  - PORT=8787
+- Create `server/.env` with your keys (never commit this):
+  - OPENAI_API_KEY=sk-... (omit to use local Ollama instead)
+  - REPLICATE_API_TOKEN=r8_...
   - ORIGIN=http://localhost:5173
-- Optionally, create a root .env for Vite:
-  - VITE_BACKEND_URL=http://localhost:8787
-  - Do not put secrets in the root .env unless you know what you’re doing. The app prefers the backend when VITE_BACKEND_URL is present.
+  - (optional) PORT=8888
+- Optionally, create a root `.env` for Vite:
+  - VITE_BACKEND_URL=http://localhost:8888
+  - Do not put secrets in the root `.env` unless you know what you’re doing. The app prefers the backend when VITE_BACKEND_URL is present.
 
 3) Start the servers
-- In one terminal: npm run server (from repo root)
-- In another: npm run dev (from repo root)
-- Frontend will be at http://localhost:5173 and will call the backend if VITE_BACKEND_URL is set.
+- In one terminal: `npm run server` (from repo root)
+- In another: `npm run dev` (from repo root)
+- Or start both: `npm run dev:full`
+- Backend listens on http://127.0.0.1:8888, Frontend on http://localhost:5173
+  - The frontend will call the backend automatically in dev (same-host heuristic) or if `VITE_BACKEND_URL` is set.
 
 ## Backend API
 - POST /api/story
@@ -50,13 +54,35 @@ Prereqs
   - Body: { plot, avatarData, buddy, lang, vocabPack, plotState }
   - Returns: { content } (a block of text which the frontend parses into lines and CHOICES)
 
+  - POST /api/generate-image
+    - Body (Seedream 4): `{ plot, lang, genre, role, dialogText, size, aspect_ratio, max_images }`
+    - Returns: `{ url, prompt, cached }` where `url` is under `/generated/*`
+    - Requires `REPLICATE_API_TOKEN`
+
+  - POST /api/generate-image-openai (fallback)
+    - Body: `{ plot, lang, genres, size }`
+    - Returns cached URL under `/data/images/*`
+    - Requires `OPENAI_API_KEY` (or `IMAGE_OPENAI_KEY`)
+
+## LLM providers
+- OpenAI (default when `OPENAI_API_KEY` is set) — `gpt-4o-mini` for story/dialogues
+- Ollama (default when no OpenAI key is set, or set `LLM_PROVIDER=ollama`) — local models like `llama3.1:8b`
+- OpenRouter (set `LLM_PROVIDER=openrouter`) — hosted multi-model router, free-tier models available
+- Env:
+  - `LLM_PROVIDER=ollama|openai`
+  - `LLM_PROVIDER=openrouter` for OpenRouter
+  - `OLLAMA_URL` default `http://127.0.0.1:11434`
+  - `OLLAMA_MODEL` default `llama3.1:8b`
+  - `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` (default `meta-llama/llama-3.1-8b-instruct:free`)
+
 ## Security notes
 - .env files are gitignored at root and under server/. Do not commit keys.
 - The frontend prefers the backend proxy so your OpenAI key stays on the server.
 
 ## Project layout
 - src/App.jsx — All app logic and UI in a single file
-- server/index.js — Express backend to call OpenAI securely
+- server/index.js — Express backend to call LLMs securely (OpenAI or local Ollama)
+- server/llm.js — provider abstraction
 - package.json — scripts: dev, build, preview, server
 - DEV_RUN.md — quickstart notes for contributors
 
@@ -70,8 +96,9 @@ Prereqs
 - “Back to Main Page” always visible on the dialogue screen; episode/page labels in white; dialogue text black
 
 ## Troubleshooting
-- If the plot/dialogue generation seems slow, ensure the backend is running and VITE_BACKEND_URL is set.
-- If push to GitHub is blocked due to secret scanning, rotate any exposed key and ensure the key isn’t present in history. Our .gitignore prevents committing .env files.
+- If plot/dialogue endpoints return 400, set `OPENAI_API_KEY` in `server/.env` and restart the backend.
+- If `/api/generate-image` fails, set `REPLICATE_API_TOKEN` in `server/.env`.
+- If push to GitHub is blocked due to secret scanning, rotate any exposed key and ensure the key isn’t present in history. Our `.gitignore` prevents committing `.env` files.
           />
 
         );

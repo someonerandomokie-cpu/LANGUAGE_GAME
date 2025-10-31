@@ -12,14 +12,52 @@
  * Keep API keys server-side (server handles RPM export). This client does not contain secrets.
  */
 
-import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
 
 const AvatarContext = createContext(null);
 
 export function AvatarProvider({ children }) {
+  // Three.js avatar payload (when loaded via loadAvatarFromUrl)
   const [avatar, setAvatar] = useState(null); // { url, scene, animations, metadata }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Unified URL state for player and buddy, plus NPC cache
+  const [avatarUrl, setAvatarUrl] = useState('');
+  const [buddyUrl, setBuddyUrlState] = useState('');
+  const [npcAvatars, setNpcAvatars] = useState({}); // { [idOrName]: url }
+
+  // LocalStorage keys (standardized)
+  const LS_KEYS = {
+    avatarUrl: 'lg.avatarUrl',
+    buddyUrl: 'lg.buddyUrl',
+    npc: 'lg.npcAvatars',
+    // legacy keys to migrate from
+    legacy: ['rpm_avatar_url', 'langvoyage_user_avatar_url', 'langvoyage_avatar']
+  };
+
+  // On mount, load and migrate any persisted values
+  useEffect(() => {
+    try {
+      // Migrate legacy avatar keys
+      const legacy = LS_KEYS.legacy.map(k => {
+        try { return localStorage.getItem(k); } catch { return null; }
+      }).find(Boolean);
+      const storedAvatar = (localStorage.getItem(LS_KEYS.avatarUrl) || legacy || '').trim();
+      if (storedAvatar) {
+        setAvatarUrl(storedAvatar);
+        if (legacy && !localStorage.getItem(LS_KEYS.avatarUrl)) {
+          try { localStorage.setItem(LS_KEYS.avatarUrl, storedAvatar); } catch {}
+        }
+      }
+      const storedBuddy = (localStorage.getItem(LS_KEYS.buddyUrl) || '').trim();
+      if (storedBuddy) setBuddyUrlState(storedBuddy);
+      const storedNpc = localStorage.getItem(LS_KEYS.npc);
+      if (storedNpc) {
+        try { setNpcAvatars(JSON.parse(storedNpc) || {}); } catch { setNpcAvatars({}); }
+      }
+    } catch {}
+  }, []);
 
   // internal refs for THREE, loader, mixer and lastScene
   const threeRefs = useRef({
@@ -123,6 +161,8 @@ export function AvatarProvider({ children }) {
         animations: gltf.animations || [],
         metadata: gltf.userData || {},
       });
+      // Also reflect URL in the simple string state for general UI usage
+      try { setAvatarUrl(url); localStorage.setItem(LS_KEYS.avatarUrl, url); } catch {}
 
       setLoading(false);
       return { scene: root, animations: gltf.animations || [], mixer };
@@ -225,6 +265,56 @@ export function AvatarProvider({ children }) {
     avatar,
     loading,
     error,
+    // simple URL state for broader app usage
+    avatarUrl,
+    buddyUrl,
+    npcAvatars,
+    // persistence helpers
+    saveAvatar: (url, { userId } = {}) => {
+      try {
+        setAvatarUrl(url || '');
+        try { localStorage.setItem(LS_KEYS.avatarUrl, url || ''); } catch {}
+        // Optionally persist to backend if userId provided
+        if (userId) {
+          fetch('/api/save-avatar', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, avatarUrl: url })
+          }).catch(() => {});
+        }
+      } catch {}
+    },
+    setBuddyUrl: (url, { persist = true, buddyId = 'buddy_001' } = {}) => {
+      try {
+        setBuddyUrlState(url || '');
+        if (persist) {
+          try { localStorage.setItem(LS_KEYS.buddyUrl, url || ''); } catch {}
+          // save buddy on backend with fixed id
+          fetch('/api/save-avatar', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: buddyId, avatarUrl: url })
+          }).catch(() => {});
+        }
+      } catch {}
+    },
+    setNpcAvatar: (key, url) => {
+      try {
+        setNpcAvatars(prev => {
+          const next = { ...(prev || {}), [key]: url };
+          try { localStorage.setItem(LS_KEYS.npc, JSON.stringify(next)); } catch {}
+          return next;
+        });
+      } catch {}
+    },
+    loadFromStorage: () => {
+      try {
+        const a = localStorage.getItem(LS_KEYS.avatarUrl);
+        const b = localStorage.getItem(LS_KEYS.buddyUrl);
+        const n = localStorage.getItem(LS_KEYS.npc);
+        if (a) setAvatarUrl(a);
+        if (b) setBuddyUrlState(b);
+        if (n) { try { setNpcAvatars(JSON.parse(n) || {}); } catch {} }
+      } catch {}
+    },
     loadAvatarFromUrl,
     unloadAvatar,
     generateNPCs,

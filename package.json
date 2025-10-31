@@ -9,13 +9,17 @@
     "preview": "vite preview --port 5176",
     "server": "node server/index.js",
     "dev:full": "concurrently -k -n server,web -c green,cyan \"npm:server\" \"npm:dev\"",
+    "smoke": "node scripts/smoke_test.js",
     "preview:full": "concurrently -k -n server,preview -c green,cyan \"npm:server\" \"npm:preview\""
   },
   "dependencies": {
+    "@readyplayerme/visage": "^6.16.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "fs-extra": "^11.3.2",
     "node-fetch": "^3.3.2",
+    "prop-types": "^15.8.1",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "replicate": "^1.3.1",

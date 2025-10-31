@@ -1,123 +1,185 @@
-const express = require('express');
-const fetch = require('node-fetch');
-const crypto = require('crypto');
-const path = require('path');
-const fs = require('fs-extra');
+import express from 'express';
+import fetch from 'node-fetch';
+import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs-extra';
+import Replicate from 'replicate';
 
 const router = express.Router();
 
-const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN;
-if (!REPLICATE_TOKEN) {
-  console.warn('REPLICATE_API_TOKEN is not set — /api/generate-image will fail until configured');
+// Lazily initialize Replicate after dotenv has loaded in the main server
+function getReplicate() {
+  if (!globalThis.__replicateInstance) {
+    const token = process.env.REPLICATE_API_TOKEN;
+    if (!token) return null;
+    globalThis.__replicateInstance = new Replicate({ auth: token });
+  }
+  return globalThis.__replicateInstance;
 }
 
 function hashPrompt(prompt) {
   return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
 }
 
-function buildPrompt({ plot, dialogText, role, lang, genre, avatarName, buddyName, style = 'photorealistic, cinematic' }) {
-  const sceneBase = role === 'dialogue'
-    ? `Create a cinematic scene matching this dialogue line: "${dialogText}".`
-    : `Create a cinematic scene that represents this plot summary: "${plot}".`;
-  const cultural = lang ? `Include local details for ${lang}.` : '';
-  const gen = genre ? `Genre: ${genre}.` : '';
-  const characters = avatarName ? `Include a protagonist named ${avatarName}` : '';
-  const mood = `Mood: nostalgic, slightly mysterious.`;
-  const framing = role === 'dialogue' ? 'Camera: medium/close shot, intimate framing.' : 'Camera: wide-angle cinematic panorama.';
-  const final = `${sceneBase} ${cultural} ${gen} ${characters}. ${mood} ${framing} Style: ${style}. Aspect ratio: 16:9. High detail, realistic lighting, cinematic color grading.`;
-  return final;
-}
-
-async function startReplicatePrediction(prompt) {
-  const url = 'https://api.replicate.com/v1/predictions';
-  const body = {
-    version: 'google/imagen-4', // If Replicate requires a specific version id replace this with the version id string
-    input: {
-      prompt: prompt,
-      // Many models accept width/height; imagen may accept different params – keep them modest for speed/cost.
-      // For safety, model params are left minimal; adjust if necessary for your Replicate plan.
-      width: 2048,
-      height: 1152
-    }
-  };
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Token ${REPLICATE_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Replicate start failed: ${resp.status} ${text}`);
-  }
-  return await resp.json();
-}
-
-async function pollPrediction(predictionId) {
-  const pollUrl = `https://api.replicate.com/v1/predictions/${predictionId}`;
-  for (let attempt = 0; attempt < 80; attempt++) {
-    const r = await fetch(pollUrl, {
-      headers: { 'Authorization': `Token ${REPLICATE_TOKEN}` }
-    });
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(`Replicate poll failed: ${r.status} ${t}`);
-    }
-    const j = await r.json();
-    if (j.status === 'succeeded') return j;
-    if (j.status === 'failed') throw new Error('Replicate prediction failed: ' + JSON.stringify(j));
-    // backoff a bit
-    await new Promise(resolve => setTimeout(resolve, 1500));
-  }
-  throw new Error('Replicate prediction timed out');
+function buildPrompt({ plot, dialogText, lang, genre }) {
+  // Concise, model-friendly prompt with strong instruction to avoid text in images
+  const core = [
+    `${genre || 'Story'} scene in ${lang || 'English'}.`,
+    `${dialogText || plot || 'A cinematic story background'}.`,
+    'Ultra-detailed, realistic lighting, depth, 4K resolution.',
+    'No text, no words, no letters, no signage, no captions, no subtitles, no watermarks.'
+  ].join('\n  ');
+  return `\n  ${core}\n`;
 }
 
 async function downloadAndSave(url, outPath) {
   const r = await fetch(url);
   if (!r.ok) throw new Error('Failed to download image: ' + r.status);
-  const buffer = await r.buffer();
+  const buffer = await r.arrayBuffer();
   await fs.ensureDir(path.dirname(outPath));
-  await fs.writeFile(outPath, buffer);
+  await fs.writeFile(outPath, Buffer.from(buffer));
   return outPath;
 }
 
 router.post('/api/generate-image', async (req, res) => {
   try {
-    if (!REPLICATE_TOKEN) return res.status(500).json({ error: 'Server not configured with REPLICATE_API_TOKEN' });
+    const replicate = getReplicate();
 
-    const { plot = '', lang = 'English', genre = '', role = 'plot', dialogText = '', avatarName = '', buddyName = '' } = req.body || {};
-    const prompt = buildPrompt({ plot, dialogText, role, lang, genre, avatarName, buddyName });
-    const key = hashPrompt(prompt);
+    const {
+      plot = '',
+      lang = 'English',
+      genre = '',
+      dialogText = '',
+      // seedream4 core controls (simple defaults, overridable)
+      width = 1024,
+      height = 576,
+      num_inference_steps = 30,
+      guidance_scale = 7.5,
+  negative_prompt = 'text, letters, words, typography, signage, caption, subtitles, watermark, logo, people, low quality, blurry, distorted'
+    } = req.body || {};
+
+    const prompt = buildPrompt({ plot, dialogText, lang, genre });
+    const key = hashPrompt(`${prompt}::${width}x${height}::${num_inference_steps}::${guidance_scale}::${negative_prompt}`);
     const publicDir = path.join(process.cwd(), 'public');
     const generatedDir = path.join(publicDir, 'generated');
-    const outPath = path.join(generatedDir, `${key}.png`);
-    const publicUrl = `/generated/${key}.png`;
+    const outJpg = path.join(generatedDir, `${key}.jpg`);
+    const publicJpg = `/generated/${key}.jpg`;
 
     // If cached image exists, return it immediately
-    if (await fs.pathExists(outPath)) {
-      return res.json({ url: publicUrl, prompt, cached: true });
+    if (await fs.pathExists(outJpg)) {
+      return res.json({ url: publicJpg, prompt, cached: true });
     }
 
-    // Start prediction on Replicate
-    const start = await startReplicatePrediction(prompt);
-    const predictionId = start.id;
-    // Poll for completion
-    const finished = await pollPrediction(predictionId);
+  // Basic input sanitation
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n|0));
+  // Per bytedance/seedream-4 docs, custom width/height ranges are 1024-4096
+  const inWidth = clamp(width || 1024, 1024, 4096);
+  const inHeight = clamp(height || 1024, 1024, 4096);
+  const steps = clamp(num_inference_steps || 30, 1, 150);
+  const guidance = Math.max(0.1, Math.min(20, Number(guidance_scale) || 7.5));
 
-    const output = finished.output;
-    if (!output || output.length === 0) throw new Error('No output from Replicate prediction');
+    // Enforce presence of Replicate token
+    if (!replicate) {
+      return res.status(500).json({ error: 'Missing REPLICATE_API_TOKEN on server. Set it in server/.env and restart backend.' });
+    }
 
-    // Use the first output URL (hosted)
-    const imageUrl = Array.isArray(output) ? output[0] : output;
-    await downloadAndSave(imageUrl, outPath);
+    // Try preferred slug then fallback to official slug if needed
+    const slugs = [process.env.REPLICATE_MODEL_SLUG || 'seedream/seedream4', 'bytedance/seedream-4'];
+    let output = null;
+    let lastErr = null;
+    for (const slug of slugs) {
+      try {
+        if (slug === 'bytedance/seedream-4') {
+          output = await replicate.run(slug, {
+            input: {
+              // Reinforce no-text rule inside prompt for models without negative_prompt support
+              prompt: `${prompt}\nNo text, no letters, no words, no signage, no captions, no watermark.`,
+              size: '1K',
+              aspect_ratio: '16:9',
+              sequential_image_generation: 'disabled',
+              max_images: 1,
+              enhance_prompt: true
+            }
+          });
+        } else {
+          output = await replicate.run(slug, {
+            input: {
+              prompt,
+              width: inWidth,
+              height: inHeight,
+              num_inference_steps: steps,
+              guidance_scale: guidance,
+              negative_prompt: negative_prompt
+            }
+          });
+        }
+        // If we got here without throwing, break; URL extraction below will validate
+        break;
+      } catch (e) {
+        lastErr = e;
+        output = null;
+        continue;
+      }
+    }
 
-    return res.json({ url: publicUrl, prompt, cached: false });
+    // output can vary by model/SDK version; try to extract a usable URL robustly
+    const extractUrl = async (out) => {
+      try {
+        if (!out) return null;
+        if (typeof out === 'string') return out;
+        if (Array.isArray(out)) {
+          for (const it of out) {
+            const u = await extractUrl(it);
+            if (u) return u;
+          }
+          return null;
+        }
+        if (typeof out === 'object') {
+          try {
+            const s = out.toString && out.toString();
+            if (s && /^https?:\/\//i.test(String(s))) return String(s);
+          } catch {}
+          if (typeof out.url === 'string') return out.url;
+          if (typeof out.proxy_url === 'string') return out.proxy_url;
+          if (out && typeof out.href === 'string') return out.href;
+          if (Array.isArray(out.images)) {
+            for (const it of out.images) {
+              const u = await extractUrl(it);
+              if (u) return u;
+            }
+          }
+          if (Array.isArray(out.output)) {
+            for (const it of out.output) {
+              const u = await extractUrl(it);
+              if (u) return u;
+            }
+          }
+        }
+      } catch {}
+      return null;
+    };
+
+    let firstUrl = await extractUrl(output);
+    if ((!firstUrl || !/^https?:\/\//i.test(String(firstUrl))) && Array.isArray(output) && output.length) {
+      try { firstUrl = String(output[0]); } catch {}
+    }
+    if (!firstUrl || !/^https?:\/\//i.test(String(firstUrl))) {
+      const shape = (() => {
+        try {
+          if (Array.isArray(output)) return { type: 'array', length: output.length, sample: String(output[0]).slice(0, 200) };
+          if (output && typeof output === 'object') return { type: 'object', keys: Object.keys(output).slice(0, 20) };
+          return { type: typeof output, value: String(output).slice(0, 200) };
+        } catch { return { type: 'unknown' }; }
+      })();
+      return res.status(502).json({ error: 'Unexpected Replicate output format', shape });
+    }
+
+    await downloadAndSave(firstUrl, outJpg);
+    return res.json({ url: publicJpg, prompt, cached: false });
   } catch (err) {
     console.error('generate-image error:', err);
     return res.status(500).json({ error: String(err?.message || err) });
   }
 });
 
-module.exports = router;
+export default router;

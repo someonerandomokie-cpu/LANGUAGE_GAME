@@ -58,7 +58,9 @@ export default function BackgroundSwitcher({ images = [], activeIndex = 0, fadeD
   const containerStyle = {
     position: 'fixed',
     inset: 0,
-    zIndex: -9999,
+    // Keep background behind content but within the app stacking context
+    // A non-negative z-index prevents it from falling behind the document body
+    zIndex: 0,
     width: '100%',
     height: '100%',
     overflow: 'hidden',
@@ -79,6 +81,16 @@ export default function BackgroundSwitcher({ images = [], activeIndex = 0, fadeD
   return (
     <>
       <div aria-hidden className="bg-switcher" style={containerStyle}>
+        {/* Fallback gradient when there are no images yet */}
+        {(!imgs || imgs.length === 0) && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)'
+            }}
+          />
+        )}
         {/* Previous layer (fading out) */}
         {previous != null && imgs[previous] && (
           <div

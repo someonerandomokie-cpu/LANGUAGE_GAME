@@ -1,29 +1,19 @@
 /**
- * rpmExportBatch.js
+ * rpmExportBatch.js (ESM)
  *
- * Express route: POST /api/rpm/export-batch
- *  - Accepts: { characters: [{ id, seed?, params? }, ...] }
- *  - For each character it calls Ready Player Me (server-side) to request an export
- *    and downloads the returned GLB to disk (public/avatars/{characterId}.glb).
- *  - Returns: [{ characterId, url, metadata }, ...]
+ * Mount at: app.use('/api/rpm', router)
+ * Endpoint: POST /api/rpm/export-batch
+ * Body: { characters: [{ id, seed?, params? }, ...] }
+ * Returns: [{ characterId, url, metadata } | { characterId, url: null, error }]
  *
- * Security: this endpoint runs server-side and must keep your READY_PLAYER_ME_API_KEY in process.env.
- *
- * Place: server/routes/rpmExportBatch.js
- *
- * NOTE: The Ready Player Me API endpoint and exact request payload change over time.
- * Replace the placeholder RPM_API_* constants and request shapes with the exact calls from RPM docs.
- *
- * Environment variables:
- *  - RPM_API_KEY : your Ready Player Me or partner API key / token
- *  - RPM_API_BASE : base RPM API (defaults to https://api.readyplayer.me)
- *  - SERVER_PUBLIC_URL : base URL where your server serves static files (e.g., https://example.com)
+ * NOTE: Placeholder RPM implementation; replace with official Ready Player Me server API calls.
  */
 
-const fs = require('fs');
-const path = require('path');
-const fetch = require('node-fetch'); // if Node >=18 you may use global fetch instead
-const express = require('express');
+import fs from 'fs';
+import path from 'path';
+import fetch from 'node-fetch';
+import express from 'express';
+
 const router = express.Router();
 
 const AVATAR_DIR = path.resolve(process.cwd(), 'public', 'avatars');
@@ -32,7 +22,6 @@ if (!fs.existsSync(AVATAR_DIR)) fs.mkdirSync(AVATAR_DIR, { recursive: true });
 // Placeholder RPM API variables - replace with real values from RPM docs or .env
 const RPM_API_BASE = process.env.RPM_API_BASE || 'https://api.readyplayer.me';
 const RPM_API_KEY = process.env.RPM_API_KEY || '';
-const SERVER_PUBLIC_URL = process.env.SERVER_PUBLIC_URL || 'http://localhost:3000'; // used to build returned URLs
 
 // Helper: call Ready Player Me to request an export for a character.
 // RETURNS an object { exportUrl, metadata } or throws.
@@ -76,7 +65,7 @@ async function downloadToFile(url, outfile) {
 
 router.post('/export-batch', async (req, res) => {
   try {
-    const { characters } = req.body;
+    const { characters } = req.body || {};
     if (!Array.isArray(characters)) return res.status(400).json({ error: 'characters array required' });
 
     const results = [];
@@ -90,8 +79,8 @@ router.post('/export-batch', async (req, res) => {
         const outfile = path.join(AVATAR_DIR, filename);
         await downloadToFile(exportUrl, outfile);
 
-        // 3) Build public URL for client consumption
-        const publicUrl = `${SERVER_PUBLIC_URL.replace(/\/$/, '')}/avatars/${filename}`;
+        // 3) Build public URL that maps to static serving of /public
+        const publicUrl = `/avatars/${filename}`;
 
         results.push({
           characterId: ch.id,
@@ -100,7 +89,6 @@ router.post('/export-batch', async (req, res) => {
         });
       } catch (err) {
         console.error('Failed to export for character', ch, err);
-        // push failure entry but keep going so a batch can partially succeed
         results.push({
           characterId: ch.id,
           url: null,
@@ -116,4 +104,4 @@ router.post('/export-batch', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;
