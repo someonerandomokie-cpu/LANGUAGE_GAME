@@ -87,7 +87,7 @@ Prereqs
 - DEV_RUN.md — quickstart notes for contributors
 
 ## What’s implemented per requirements
-- Strategic choices only when replying to non-user, with at least 2–3 target-language options; no English choices
+- Strategic choices when replying to non-user, with at least 2–3 target-language options; choices that change the plot; simple choices; no English choices
 - 100 dialogue pages per episode (padded if needed)
 - PlotState continuity across episodes (tone + recent decisions)
 - Plot page countdown from 3 seconds; first plot auto-generated
