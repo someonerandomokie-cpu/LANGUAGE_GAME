@@ -355,12 +355,8 @@ function AppInner() {
     if (storyDialogues && storyDialogues.length > 0) return;
     if (prefetch.dialogues && prefetch.dialogues.length) {
       setPlotSummary(prefetch.plot);
-      // inject fallback choices where missing (~every 5 lines)
-      const withChoices = prefetch.dialogues.map((d, idx) => {
-        if (d && d.choices && d.choices.length) return d;
-        const fb = createFallbackChoices(idx, vocabPack);
-        return fb ? { ...d, choices: fb } : d;
-      });
+      // Use OpenAI dialogues as-is (no local fallback choices)
+      const withChoices = prefetch.dialogues;
       setStoryDialogues(withChoices);
       // resume from saved index if available for this episode
       const saved = (episodes[language]?.progress && episodes[language]?.progress[currentEpisode || 1]) ?? episodes[language]?.lastSeenDialogueIndex;
@@ -384,11 +380,8 @@ function AppInner() {
         const prevPlotState = episodes[language]?.plotState || plotState;
         // Strictly use OpenAI for dialogues; surface error if unavailable
         const dlg = await remoteGenerateDialogues({ plot: plotSummary, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
-        const withChoices = dlg.map((d, idx) => {
-          if (d && d.choices && d.choices.length) return d;
-          const fb = createFallbackChoices(idx, vocabPack);
-          return fb ? { ...d, choices: fb } : d;
-        });
+        // Use OpenAI dialogues as-is (no local fallback choices)
+        const withChoices = dlg;
         setStoryDialogues(withChoices);
         const saved = (episodes[language]?.progress && episodes[language]?.progress[currentEpisode || 1]) ?? episodes[language]?.lastSeenDialogueIndex;
         const startIdx = (typeof saved === 'number' && saved >= 0 && saved < withChoices.length) ? saved : 0;
@@ -2355,10 +2348,10 @@ function AppInner() {
         // Disable any clicks while loading or when no current line
         if (dialogueLoading || !dlg) return;
         // Advance dialogue on background click only when no visible choices are present
-        const hasScriptChoices = dlg && dlg.choices && dlg.choices.length > 0;
-        // AI choices are only visible when the user is NOT speaking
-        const hasVisibleAiChoices = (aiChoices[dialogueIndex] && aiChoices[dialogueIndex].length > 0 && !isUserSpeaker(dlg));
-        if (hasScriptChoices || hasVisibleAiChoices) {
+        const userSpeakingHere = isUserSpeaker(dlg);
+        const hasVisibleScriptChoices = !!(dlg && dlg.choices && dlg.choices.length > 0 && !userSpeakingHere);
+        const hasVisibleAiChoices = !!(aiChoices[dialogueIndex] && aiChoices[dialogueIndex].length > 0 && !userSpeakingHere);
+        if (hasVisibleScriptChoices || hasVisibleAiChoices) {
           // Do not advance if choices are available - user must select one
           return;
         }
