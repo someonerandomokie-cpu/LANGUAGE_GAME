@@ -75,6 +75,9 @@ Prereqs
   - `OLLAMA_MODEL` default `llama3.1:8b`
   - `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` (default `meta-llama/llama-3.1-8b-instruct:free`)
 
+## Deploy to Render
+See [RENDER_DEPLOYMENT.md](./RENDER_DEPLOYMENT.md) for instructions on deploying the backend to Render cloud platform.
+
 ## Security notes
 - .env files are gitignored at root and under server/. Do not commit keys.
 - The frontend prefers the backend proxy so your OpenAI key stays on the server.
