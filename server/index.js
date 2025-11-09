@@ -46,8 +46,9 @@ app.use(express.json());
 // Startup diagnostics for configuration
 // Per requirements: OpenAI must be used for text generation
 if (!OPENAI_KEY) {
-  console.error('ERROR: OPENAI_API_KEY is required for text generation. Please set it in server/.env');
+  console.error('WARNING: OPENAI_API_KEY is not set. Some features will not work.');
   console.error('The application will not function properly without OpenAI API access.');
+  // Don't exit - allow server to start for health checks
 }
 const LLM_PROVIDER = 'openai'; // Enforce OpenAI per requirements
 console.log(`LLM provider: ${LLM_PROVIDER} (OpenAI API required for text generation)`);
@@ -510,6 +511,48 @@ try {
 
 // Bind to 0.0.0.0 for cloud deployment (Render), or 127.0.0.1 for local dev
 const HOST = process.env.HOST || '0.0.0.0';
-app.listen(PORT, HOST, () => {
-  console.log(`Language-Game server listening on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT}`);
+
+// Add startup diagnostics
+console.log('=== Server Startup ===');
+console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`Host: ${HOST}`);
+console.log(`Port: ${PORT}`);
+console.log(`CORS Origin: ${ORIGIN}`);
+console.log(`OpenAI Key: ${OPENAI_KEY ? '✓ Set' : '✗ Missing'}`);
+console.log(`Replicate Token: ${process.env.REPLICATE_API_TOKEN ? '✓ Set' : '✗ Missing'}`);
+console.log(`LLM Provider: ${LLM_PROVIDER}`);
+console.log('=====================');
+
+const server = app.listen(PORT, HOST, () => {
+  console.log(`✓ Language-Game server listening on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT}`);
+  console.log(`✓ Health check available at: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/api/health`);
+  console.log('✓ Server is ready to accept connections');
+});
+
+// Handle server errors
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`✗ Error: Port ${PORT} is already in use`);
+    console.error(`  Try a different port or stop the process using port ${PORT}`);
+  } else {
+    console.error('✗ Server error:', err);
+  }
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('\nSIGINT received, shutting down gracefully...');
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
 });

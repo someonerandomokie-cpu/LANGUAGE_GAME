@@ -21,3 +21,7 @@ services:
       - key: HOST
         value: "0.0.0.0"
     healthCheckPath: /api/health
+    # Add startup timeout and health check config to prevent hanging
+    autoDeploy: true
+    # Increase timeout for initial startup
+    initialDelay: 60
