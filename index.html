@@ -41,24 +41,43 @@
           var root = document.getElementById('root');
           var o = document.getElementById('boot-overlay');
           if (!root || !o) return false;
-          // Check for actual content: either child nodes or non-empty textContent
-          var hasContent = (root.childNodes && root.childNodes.length > 0) || 
-                          (root.children && root.children.length > 0) ||
-                          (root.textContent && root.textContent.trim().length > 0);
+          // Check for actual content: React 18 with createRoot renders asynchronously
+          // We need to check for both direct children and text content more carefully
+          var hasChildren = root.childNodes && root.childNodes.length > 0;
+          var hasElements = root.children && root.children.length > 0;
+          var hasText = root.textContent && root.textContent.trim().length > 0;
+          var hasContent = hasChildren || hasElements || hasText;
           if (hasContent){ 
             o.style.display='none'; 
             if (bootTimeout) clearTimeout(bootTimeout);
+            if (iv) clearInterval(iv);
             return true; 
           }
           return false;
         }
-        var iv = setInterval(function(){ if(tryHide()) clearInterval(iv); }, 60);
+        // Use MutationObserver for more reliable detection with React 18
+        var iv = null;
+        var observer = null;
+        try {
+          var root = document.getElementById('root');
+          if (root && window.MutationObserver) {
+            observer = new MutationObserver(function(mutations) {
+              if (tryHide()) {
+                if (observer) observer.disconnect();
+              }
+            });
+            observer.observe(root, { childList: true, subtree: true, characterData: true });
+          }
+        } catch(e) {}
+        // Fallback polling for browsers without MutationObserver
+        iv = setInterval(function(){ if(tryHide() && iv) clearInterval(iv); }, 60);
         // Add 10-second timeout as safety fallback to prevent infinite boot screen
         bootTimeout = setTimeout(function(){
           if (!tryHide()) {
             showError('App failed to initialize within 10 seconds. Please refresh the page or check your connection.');
           }
           if (iv) clearInterval(iv);
+          if (observer) observer.disconnect();
         }, 10000);
         if (document.readyState === 'complete' || document.readyState === 'interactive') { setTimeout(tryHide, 0); }
         else { document.addEventListener('DOMContentLoaded', function(){ setTimeout(tryHide, 0); }); }
