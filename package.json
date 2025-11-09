@@ -10,7 +10,8 @@
     "server": "node server/index.js",
     "dev:full": "concurrently -k -n server,web -c green,cyan \"npm:server\" \"npm:dev\"",
     "smoke": "node scripts/smoke_test.js",
-    "preview:full": "concurrently -k -n server,preview -c green,cyan \"npm:server\" \"npm:preview\""
+    "preview:full": "concurrently -k -n server,preview -c green,cyan \"npm:server\" \"npm:preview\"",
+    "start": "node server/index.js"
   },
   "dependencies": {
     "@readyplayerme/visage": "^6.16.0",
