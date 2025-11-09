@@ -2520,7 +2520,20 @@ function AppInner() {
     );
   }
 
-  return null;
+  // Fallback UI if screen state is somehow invalid
+  return (
+    <div style={styles.container}>
+      <h1 style={styles.title}>Welcome to LangVoyage</h1>
+      <p style={{ maxWidth: 760, textAlign: 'center', color: 'white', fontSize: '1.1rem', lineHeight: 1.6 }}>
+        Loading...
+      </p>
+      <div style={{ marginTop: 24 }}>
+        <button onClick={() => setScreen('opening')} style={styles.continueButton}>
+          Start
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // Default export wraps app with AvatarProvider so AvatarCreator can save to context/localStorage

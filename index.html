@@ -40,7 +40,12 @@
         function tryHide(){
           var root = document.getElementById('root');
           var o = document.getElementById('boot-overlay');
-          if (root && root.childNodes && root.childNodes.length>0 && o){ 
+          if (!root || !o) return false;
+          // Check for actual content: either child nodes or non-empty textContent
+          var hasContent = (root.childNodes && root.childNodes.length > 0) || 
+                          (root.children && root.children.length > 0) ||
+                          (root.textContent && root.textContent.trim().length > 0);
+          if (hasContent){ 
             o.style.display='none'; 
             if (bootTimeout) clearTimeout(bootTimeout);
             return true; 
