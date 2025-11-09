@@ -265,10 +265,7 @@ app.post('/api/story', async (req, res) => {
 
     let summary = String(result.content || '').trim();
     if (!summary) {
-      // local fallback
-      const adj = (plotState?.tone === 'bold' ? 'bold' : plotState?.tone === 'friendly' ? 'warm' : 'curious');
-      const genreTxt = (genresList && genresList.length) ? genresList.join(', ') : 'slice-of-life';
-      summary = `${name} and ${buddy} explore ${city}, ${country}, in a ${genreTxt} adventure marked by ${adj} choices. A new conflict emerges with no repeats from before, steering them into unfamiliar corners of the city and ending on a fresh question.`;
+      throw new Error('LLM returned empty response for story generation');
     }
     res.json({ summary, story: summary, text: summary });
   } catch (e) {
@@ -304,28 +301,7 @@ app.post('/api/dialogues', async (req, res) => {
 
     let content = result.content || '';
     if (!content) {
-      // Simple local fallback: English dialogue, sprinkle vocab words occasionally
-      const A = name;
-      const B = buddy;
-      const npcs = ['Vendor', 'Elder', 'Guide'];
-      const voices = [A, B, ...npcs];
-      const vocab = (Array.isArray(vocabWords) ? vocabWords : []);
-      const lines = [];
-      let s = 0;
-      for (let i = 1; i <= 100; i++) {
-        const who = voices[s++ % voices.length];
-        const base = i % 9 === 0 ? `We’re back near ${city}.` : `Let’s keep the thread moving.`;
-        const add = (vocab.length && i % 7 === 0) ? ` Maybe we should try saying "${vocab[(i/7|0)%vocab.length]}" to that person.` : '';
-        lines.push(`${who}: ${base}${add}`);
-        if (i % 5 === 0) {
-          lines.push('CHOICES:');
-          if (vocab.length) lines.push(`- Say: "${vocab[(i/5|0)%vocab.length]}"`);
-          lines.push(`- Make a plan to check the next alley`);
-          lines.push(`- Ask ${B} about the note we found`);
-        }
-      }
-      lines[lines.length - 1] = `${A}: Tomorrow we follow the last clue.`;
-      content = lines.join('\n');
+      throw new Error('LLM returned empty response for dialogue generation');
     }
     res.json({ content, text: content });
   } catch (e) {
@@ -418,22 +394,9 @@ Constraints:
       jsonText = String(content || '').trim();
       // If provider returned nothing (mock), fall through to local template
       if (!jsonText) throw new Error('empty-lesson');
-    } catch {
-      // Local deterministic lesson if no LLM available
-      const baseWords = [
-        { word: 'hola', meaning: 'hello', examples: ['hola, ¿qué tal?', 'hola a todos'] },
-        { word: 'gracias', meaning: 'thank you', examples: ['muchas gracias', 'gracias por todo'] },
-        { word: 'por favor', meaning: 'please', examples: ['una mesa, por favor', 'ayuda, por favor'] },
-        { word: 'adiós', meaning: 'goodbye', examples: ['adiós, nos vemos', 'adiós y buena suerte'] },
-        { word: 'sí', meaning: 'yes', examples: ['sí, claro', 'sí, me gusta'] }
-      ];
-      const basePhrases = [
-        { phrase: 'buenos días', meaning: 'good morning' },
-        { phrase: 'buenas noches', meaning: 'good night' },
-        { phrase: '¿cómo estás?', meaning: 'how are you?' }
-      ];
-      const local = { words: baseWords, phrases: basePhrases };
-      return res.json(local);
+    } catch (err) {
+      // No fallback - require LLM for lesson generation
+      throw err;
     }
 
     // Parse JSON from the LLM
