@@ -99,7 +99,5 @@ Prereqs
 - If plot/dialogue endpoints return 400, set `OPENAI_API_KEY` in `server/.env` and restart the backend.
 - If `/api/generate-image` fails, set `REPLICATE_API_TOKEN` in `server/.env`.
 - If push to GitHub is blocked due to secret scanning, rotate any exposed key and ensure the key isn’t present in history. Our `.gitignore` prevents committing `.env` files.
-          />
 
-        );
-
+For detailed setup instructions, see [SETUP_GUIDE.md](./SETUP_GUIDE.md).
