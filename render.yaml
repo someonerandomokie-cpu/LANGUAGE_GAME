@@ -1,0 +1,23 @@
+services:
+  # Backend API Server
+  - type: web
+    name: language-game-backend
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: cd server && npm install
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REPLICATE_API_TOKEN
+        sync: false
+      - key: RPM_API_KEY
+        sync: false
+      - key: ORIGIN
+        value: "*"
+      - key: HOST
+        value: "0.0.0.0"
+    healthCheckPath: /api/health

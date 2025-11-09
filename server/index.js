@@ -27,16 +27,14 @@ dotenv.config({ override: true });
 dotenv.config({ path: path.resolve(__dirnameEnv, '.env'), override: true });
 
 const app = express();
-// Pin to a stable local port to avoid shell/env conflicts
-const PORT = 8888;
+// Use PORT from environment (for Render) or default to 8888 for local dev
+const PORT = process.env.PORT || 8888;
 const ORIGIN = process.env.ORIGIN || '*';
 // Some environments prefix shell exports with the word "export"; strip it defensively
 const cleanKey = (s) => (s || '').replace(/^\s*export\s+/i, '').trim();
 const OPENAI_KEY = cleanKey(process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_KEY);
 // Optional separate API key to use exclusively for image generation (do NOT commit the key)
 const IMAGE_OPENAI_KEY = cleanKey(process.env.IMAGE_OPENAI_API_KEY || process.env.IMAGE_OPENAI_KEY || '');
-// Per user request: instantiate an OpenAI client using the official SDK
-const client = new OpenAI();
 // Model used to produce a refined image prompt from the plot text (GPT-4o requested by user).
 // Can be overridden via IMAGE_PROMPT_MODEL in env. If not set, no intermediate prompt-gen call is made.
 const IMAGE_PROMPT_MODEL = process.env.IMAGE_PROMPT_MODEL || 'gpt-5-mini';
@@ -510,7 +508,8 @@ try {
   // ignore if not available (e.g., during dev)
 }
 
-const HOST = '127.0.0.1';
+// Bind to 0.0.0.0 for cloud deployment (Render), or 127.0.0.1 for local dev
+const HOST = process.env.HOST || '0.0.0.0';
 app.listen(PORT, HOST, () => {
   console.log(`Language-Game server listening on http://${HOST === '0.0.0.0' ? '0.0.0.0' : HOST}:${PORT}`);
 });
