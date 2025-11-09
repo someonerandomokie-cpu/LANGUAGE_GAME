@@ -46,12 +46,13 @@ app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
 app.use(express.json());
 
 // Startup diagnostics for configuration
-const LLM_PROVIDER = process.env.LLM_PROVIDER || (OPENAI_KEY ? 'openai' : 'ollama');
-if (LLM_PROVIDER === 'openai' && !OPENAI_KEY) {
-  console.warn('LLM provider is openai but OPENAI_API_KEY is not set — /api/lesson and /api/tts will fail until configured. Plot/dialogues will try Ollama if available.');
-} else {
-  console.log(`LLM provider: ${LLM_PROVIDER}${LLM_PROVIDER === 'ollama' ? ` (url=${process.env.OLLAMA_URL || 'http://127.0.0.1:11434'}, model=${process.env.OLLAMA_MODEL || 'llama3.1:8b'})` : ''}`);
+// Per requirements: OpenAI must be used for text generation
+if (!OPENAI_KEY) {
+  console.error('ERROR: OPENAI_API_KEY is required for text generation. Please set it in server/.env');
+  console.error('The application will not function properly without OpenAI API access.');
 }
+const LLM_PROVIDER = 'openai'; // Enforce OpenAI per requirements
+console.log(`LLM provider: ${LLM_PROVIDER} (OpenAI API required for text generation)`);
 
 // In dev, re-load env on every request so editing server/.env takes effect without restart.
 // This is safe because dotenv only sets process.env for missing keys unless override:true.
@@ -261,7 +262,7 @@ app.post('/api/story', async (req, res) => {
     const result = await llmChat([
       { role: 'system', content: 'You are a narrative designer. Output in English only.' },
       { role: 'user', content: `${instruction}\n\n${contextNote}\n${toneNote}` }
-    ], { temperature: 0.9, max_tokens: 400 });
+    ], { provider: 'openai', temperature: 0.9, max_tokens: 400 });
 
     let summary = String(result.content || '').trim();
     if (!summary) {
@@ -297,7 +298,7 @@ app.post('/api/dialogues', async (req, res) => {
     const result = await llmChat([
       { role: 'system', content: 'You are a screenwriter. Output only dialogue lines and occasional CHOICES blocks. Keep exact speaker names consistent across the entire script.' },
       { role: 'user', content: `${instruction}\n\nPlot summary:\n${plot}\n\nSetting: ${city}, ${country}\nTone/state: ${JSON.stringify(plotState)}` }
-    ], { temperature: 0.9, max_tokens: 4000 });
+    ], { provider: 'openai', temperature: 0.9, max_tokens: 4000 });
 
     let content = result.content || '';
     if (!content) {
@@ -390,7 +391,7 @@ Constraints:
     // Use LLM provider if available
     let jsonText = '';
     try {
-      const { content, provider } = await llmChat([{ role: 'user', content: prompt }], { temperature: 0.7, max_tokens: 800 });
+      const { content, provider } = await llmChat([{ role: 'user', content: prompt }], { provider: 'openai', temperature: 0.7, max_tokens: 800 });
       jsonText = String(content || '').trim();
       // If provider returned nothing (mock), fall through to local template
       if (!jsonText) throw new Error('empty-lesson');
