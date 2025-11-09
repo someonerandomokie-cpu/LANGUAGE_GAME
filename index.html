@@ -26,6 +26,7 @@
       // Minimal runtime error surface so we never show a silent white screen
       (function(){
         var overlay = document.getElementById('boot-overlay');
+        var bootTimeout = null;
         function showError(msg){
           try {
             var box = document.getElementById('boot-error');
@@ -39,10 +40,21 @@
         function tryHide(){
           var root = document.getElementById('root');
           var o = document.getElementById('boot-overlay');
-          if (root && root.childNodes && root.childNodes.length>0 && o){ o.style.display='none'; return true; }
+          if (root && root.childNodes && root.childNodes.length>0 && o){ 
+            o.style.display='none'; 
+            if (bootTimeout) clearTimeout(bootTimeout);
+            return true; 
+          }
           return false;
         }
         var iv = setInterval(function(){ if(tryHide()) clearInterval(iv); }, 60);
+        // Add 10-second timeout as safety fallback to prevent infinite boot screen
+        bootTimeout = setTimeout(function(){
+          if (!tryHide()) {
+            showError('App failed to initialize within 10 seconds. Please refresh the page or check your connection.');
+          }
+          if (iv) clearInterval(iv);
+        }, 10000);
         if (document.readyState === 'complete' || document.readyState === 'interactive') { setTimeout(tryHide, 0); }
         else { document.addEventListener('DOMContentLoaded', function(){ setTimeout(tryHide, 0); }); }
       })();
