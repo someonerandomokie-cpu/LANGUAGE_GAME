@@ -27,6 +27,10 @@
       (function(){
         var overlay = document.getElementById('boot-overlay');
         var bootTimeout = null;
+        var observer = null;
+        var checkInterval = null;
+        var appBooted = false;
+        
         function showError(msg){
           try {
             var box = document.getElementById('boot-error');
@@ -34,53 +38,78 @@
             if (overlay){ overlay.style.background = 'linear-gradient(135deg,#7f1d1d,#450a0a)'; }
           } catch(_){}
         }
+        
         window.addEventListener('error', function(e){ showError(e && (e.message || e.error && e.error.message) || e); });
         window.addEventListener('unhandledrejection', function(e){ showError(e && (e.reason && (e.reason.message || e.reason)) || 'Unhandled promise rejection'); });
-        // Hide overlay when React attaches something to #root
-        function tryHide(){
-          var root = document.getElementById('root');
+        
+        // Simplified boot detection - hide overlay when React renders content
+        function hideOverlay(){
+          if (appBooted) return;
+          appBooted = true;
+          
           var o = document.getElementById('boot-overlay');
-          if (!root || !o) return false;
-          // Check for actual content: React 18 with createRoot renders asynchronously
-          // We need to check for both direct children and text content more carefully
-          var hasChildren = root.childNodes && root.childNodes.length > 0;
-          var hasElements = root.children && root.children.length > 0;
-          var hasText = root.textContent && root.textContent.trim().length > 0;
-          var hasContent = hasChildren || hasElements || hasText;
-          if (hasContent){ 
-            o.style.display='none'; 
-            if (bootTimeout) clearTimeout(bootTimeout);
-            if (iv) clearInterval(iv);
-            return true; 
+          if (o) {
+            o.style.transition = 'opacity 0.3s ease-out';
+            o.style.opacity = '0';
+            setTimeout(function(){ 
+              if (o && o.parentNode) o.parentNode.removeChild(o); 
+            }, 300);
+          }
+          
+          // Clean up observers and timers
+          if (observer) { observer.disconnect(); observer = null; }
+          if (checkInterval) { clearInterval(checkInterval); checkInterval = null; }
+          if (bootTimeout) { clearTimeout(bootTimeout); bootTimeout = null; }
+        }
+        
+        // Check if React has rendered content
+        function checkForContent(){
+          var root = document.getElementById('root');
+          if (!root) return false;
+          
+          // Simple check: does root have any child elements?
+          // React 18 with createRoot will add a div as soon as it starts rendering
+          if (root.children && root.children.length > 0) {
+            hideOverlay();
+            return true;
           }
           return false;
         }
-        // Use MutationObserver for more reliable detection with React 18
-        var iv = null;
-        var observer = null;
+        
+        // Use MutationObserver to detect when React adds content
         try {
           var root = document.getElementById('root');
           if (root && window.MutationObserver) {
             observer = new MutationObserver(function(mutations) {
-              if (tryHide()) {
-                if (observer) observer.disconnect();
-              }
+              checkForContent();
             });
-            observer.observe(root, { childList: true, subtree: true, characterData: true });
+            observer.observe(root, { childList: true, subtree: true });
           }
-        } catch(e) {}
-        // Fallback polling for browsers without MutationObserver
-        iv = setInterval(function(){ if(tryHide() && iv) clearInterval(iv); }, 60);
-        // Add 10-second timeout as safety fallback to prevent infinite boot screen
+        } catch(e) {
+          console.error('MutationObserver setup failed:', e);
+        }
+        
+        // Fallback: poll every 100ms
+        checkInterval = setInterval(checkForContent, 100);
+        
+        // Safety timeout: show error after 10 seconds
         bootTimeout = setTimeout(function(){
-          if (!tryHide()) {
+          if (!appBooted) {
             showError('App failed to initialize within 10 seconds. Please refresh the page or check your connection.');
+            // Clean up
+            if (observer) { observer.disconnect(); observer = null; }
+            if (checkInterval) { clearInterval(checkInterval); checkInterval = null; }
           }
-          if (iv) clearInterval(iv);
-          if (observer) observer.disconnect();
         }, 10000);
-        if (document.readyState === 'complete' || document.readyState === 'interactive') { setTimeout(tryHide, 0); }
-        else { document.addEventListener('DOMContentLoaded', function(){ setTimeout(tryHide, 0); }); }
+        
+        // Try to check immediately if DOM is already ready
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+          setTimeout(checkForContent, 0);
+        } else {
+          document.addEventListener('DOMContentLoaded', function(){ 
+            setTimeout(checkForContent, 0); 
+          });
+        }
       })();
     </script>
     <!-- Lightweight GLB/VRM viewer for avatar rendering in dialogue -->
