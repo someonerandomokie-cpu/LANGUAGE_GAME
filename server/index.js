@@ -37,7 +37,7 @@ const OPENAI_KEY = cleanKey(process.env.OPENAI_API_KEY || process.env.VITE_OPENA
 const IMAGE_OPENAI_KEY = cleanKey(process.env.IMAGE_OPENAI_API_KEY || process.env.IMAGE_OPENAI_KEY || '');
 // Model used to produce a refined image prompt from the plot text (GPT-4o requested by user).
 // Can be overridden via IMAGE_PROMPT_MODEL in env. If not set, no intermediate prompt-gen call is made.
-const IMAGE_PROMPT_MODEL = process.env.IMAGE_PROMPT_MODEL || 'gpt-5-mini';
+const IMAGE_PROMPT_MODEL = process.env.IMAGE_PROMPT_MODEL || 'gpt-4o-mini';
 // Removed Runway API key (not used)
 
 app.use(cors({ origin: ORIGIN === '*' ? true : ORIGIN }));
@@ -85,7 +85,7 @@ app.post('/api/generate', async (req, res) => {
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
     }
-    const primary = process.env.OPENAI_MODEL || 'gpt-5-mini';
+    const primary = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const userMsg = { role: 'user', content: String(prompt || '').slice(0, 4000) };
     let text = '';
     try {
@@ -97,7 +97,7 @@ app.post('/api/generate', async (req, res) => {
     } catch (err) {
       const m = String(err?.message || err || '');
       if (/must be verified|not found|unsupported model|404/i.test(m)) {
-        const fallback = 'gpt-4o-mini';
+        const fallback = 'gpt-3.5-turbo';
         const completion2 = await getOpenAIClient().chat.completions.create({
           model: fallback,
           messages: [userMsg]
@@ -328,12 +328,12 @@ app.post('/api/choices', async (req, res) => {
     const user = { role: 'user', content: `${instruction}\n\nPlot:\n${plot}\n\nRecent lines:\n${ctxSnippet}\n\nCurrent tone: ${tone}` };
     let out = '';
     try {
-      const completion = await getOpenAIClient().chat.completions.create({ model: process.env.OPENAI_MODEL || 'gpt-5-mini', messages: [user] });
+      const completion = await getOpenAIClient().chat.completions.create({ model: process.env.OPENAI_MODEL || 'gpt-4o-mini', messages: [user] });
       out = completion?.choices?.[0]?.message?.content || '';
     } catch (err) {
       const m = String(err?.message||'');
       if (/must be verified|not found|unsupported model|404/i.test(m)) {
-        const completion2 = await getOpenAIClient().chat.completions.create({ model: 'gpt-4o-mini', messages: [user] });
+        const completion2 = await getOpenAIClient().chat.completions.create({ model: 'gpt-3.5-turbo', messages: [user] });
         out = completion2?.choices?.[0]?.message?.content || '';
       } else {
         throw err;

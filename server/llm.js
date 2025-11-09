@@ -66,7 +66,7 @@ export async function chat(messages, {
   if (envProvider === 'openai') {
     // The OpenAI SDK reads OPENAI_API_KEY from env; ensure it's present
     if (!process.env.OPENAI_API_KEY) throw new Error('LLM provider set to openai but OPENAI_API_KEY is missing');
-    const primaryModel = model || process.env.OPENAI_MODEL || 'gpt-5-mini';
+    const primaryModel = model || process.env.OPENAI_MODEL || 'gpt-4o-mini';
     let content = '';
     try {
       const completion = await getOpenAIClient().chat.completions.create({
@@ -81,7 +81,7 @@ export async function chat(messages, {
       const msg = String(e?.message || e || '');
       const forbidden = /must be verified|not found|unsupported model|404/i.test(msg);
       if (forbidden) {
-        const fallbackModel = 'gpt-4o-mini';
+        const fallbackModel = 'gpt-3.5-turbo';
         const completion2 = await getOpenAIClient().chat.completions.create({
           model: fallbackModel,
           messages,
