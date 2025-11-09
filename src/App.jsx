@@ -2,7 +2,6 @@ import React, { useEffect, useState, useRef } from 'react';
 import { AvatarProvider, useAvatar } from './context/AvatarContext.jsx';
 import ThreeAvatarViewer from './components/ThreeAvatarViewer.jsx';
 import DialogueScene from './components/DialogueScene.jsx';
-import StoryBackground, { analyzeStoryContext } from './StoryBackground.jsx';
 import { useChoiceManager } from './hooks/useChoiceManager';
 import ChoiceManager from './components/ChoiceManager.jsx';
 import BackgroundSwitcher from './components/BackgroundSwitcher.jsx';
@@ -261,15 +260,8 @@ function AppInner() {
         const prevPlotState = episodes[language]?.plotState || plotState;
         const epNum = currentEpisode || 1;
 
-        // Generate story text (remote or local fallback)
-        const storyText = await (async () => {
-          try {
-            return await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
-          } catch (err) {
-            console.warn('remoteGenerateStory failed, falling back to local aiGenerateStory', err);
-            return aiGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, plotState: prevPlotState });
-          }
-        })();
+        // Generate story text strictly via OpenAI API (no fallback)
+        const storyText = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddyName, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
 
         // Generate dialogues strictly via OpenAI (no local fallback)
         const dialogues = await remoteGenerateDialogues({ plot: storyText, avatarData: avatar, buddy: buddyName, lang: language, vocabPack, plotState: prevPlotState });
@@ -1596,21 +1588,8 @@ function AppInner() {
         const buddy = buddyName || generateBuddyName(language);
         if (!buddyName) setBuddyName(buddy);
 
-        // Try backend first
-        let story;
-        try {
-          story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddy, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
-        } catch (remoteErr) {
-          // Fallback to local generator so the user is never blocked
-          try {
-            story = aiGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddy, hobbies: avatar.hobbies, traits: avatar.traits, plotState: prevPlotState });
-            // Clear any error because we recovered locally
-            setPlotError('');
-          } catch (localErr) {
-            // If even local generation failed, rethrow the original backend error
-            throw remoteErr || localErr;
-          }
-        }
+        // Use OpenAI API for story generation (no local fallback per requirements)
+        const story = await remoteGenerateStory({ lang: language, genresList: genres, avatarData: avatar, buddy: buddy, hobbies: avatar.hobbies, traits: avatar.traits, episodeNum: epNum, previousPlot: prevPlot, plotState: prevPlotState });
 
         setPlotSummary((story || '').trim());
         // persist generated plot into episodes (dialogues will be generated later after lesson)
@@ -1620,7 +1599,7 @@ function AppInner() {
         });
       } catch (err) {
         const msg = String(err?.message || err || 'Failed to generate plot');
-        setPlotError(msg.includes('Missing OPENAI_API_KEY') ? 'Server is missing OPENAI_API_KEY. Using local story instead.' : msg);
+        setPlotError(msg.includes('Missing OPENAI_API_KEY') ? 'Server is missing OPENAI_API_KEY. Please configure it.' : msg);
       } finally {
         // Stop timer and clear generating flag regardless of success
         if (plotTimerRef.current) {
@@ -2039,8 +2018,7 @@ function AppInner() {
     return (
       <>
         <BackgroundSwitcher images={backgroundImages} activeIndex={bgActiveIndex} fadeDuration={700} />
-        {/* Add stylized StoryBackground so we never show a blank page while waiting for images */}
-        <StoryBackground city={city} context={analyzeStoryContext(plotSummary || '', {})} />
+        {/* Only use API-generated images via BackgroundSwitcher - no local SVG fallback */}
   <div style={{ ...styles.container, background: 'transparent', position: 'relative', zIndex: 1 }}>
           <h1 style={styles.title}>Plot summary</h1>
           {plotError && (
@@ -2375,11 +2353,10 @@ function AppInner() {
   const canShowAvatar = Boolean((userSpeaking && avatarUrl) || (buddySpeaking && buddyUrl));
     const country = LANGUAGE_COUNTRY[language] || `${language}-speaking country`;
     const city = COUNTRY_CITY[country] || 'the capital';
-    const ctx = analyzeStoryContext(dlg?.text || '', {});
     return (
       <>
         <BackgroundSwitcher images={backgroundImages} activeIndex={bgActiveIndex} fadeDuration={700} />
-        <StoryBackground city={city} context={ctx} />
+        {/* Only use API-generated images via BackgroundSwitcher - no local SVG fallback */}
         <div style={{ ...styles.container, justifyContent: 'center', background: 'transparent', position: 'relative', zIndex: 1 }} onClick={() => {
         // Disable any clicks while loading or when no current line
         if (dialogueLoading || !dlg) return;
