@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Language Game - Dev</title>
+    <!-- Speed up Ready Player Me iframe by warming up connections -->
+    <link rel="dns-prefetch" href="//readyplayer.me" />
+    <link rel="preconnect" href="https://readyplayer.me" crossorigin />
+    <link rel="dns-prefetch" href="//models.readyplayer.me" />
+    <link rel="preconnect" href="https://models.readyplayer.me" crossorigin />
+    <link rel="dns-prefetch" href="//cdn.readyplayer.me" />
+    <link rel="preconnect" href="https://cdn.readyplayer.me" crossorigin />
+    <script type="module" crossorigin src="/LANGUAGE_GAME/assets/index-Cc1jbXyT.js"></script>
+  </head>
+  <body style="margin:0;background:#0f172a;color:#fff;">
+    <!-- Boot/status overlay: prevents silent white screens and shows early errors -->
+    <div id="boot-overlay" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1f2937,#0f172a);color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;z-index:99999">
+      <div style="text-align:center;max-width:720px;padding:16px">
+        <div style="opacity:.85;margin-bottom:8px">Booting app…</div>
+        <noscript><strong>This app requires JavaScript enabled.</strong></noscript>
+        <div id="boot-error" style="display:none;text-align:left;margin-top:8px;background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);padding:12px;border-radius:8px;white-space:pre-wrap"></div>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script>
+      // Minimal runtime error surface so we never show a silent white screen
+      (function(){
+        var overlay = document.getElementById('boot-overlay');
+        var bootTimeout = null;
+        var observer = null;
+        var checkInterval = null;
+        var appBooted = false;
+        
+        function showError(msg){
+          try {
+            var box = document.getElementById('boot-error');
+            if (box){ box.style.display='block'; box.textContent = String(msg || 'Unknown error'); }
+            if (overlay){ overlay.style.background = 'linear-gradient(135deg,#7f1d1d,#450a0a)'; }
+          } catch(_){}
+        }
+        
+        window.addEventListener('error', function(e){ showError(e && (e.message || e.error && e.error.message) || e); });
+        window.addEventListener('unhandledrejection', function(e){ showError(e && (e.reason && (e.reason.message || e.reason)) || 'Unhandled promise rejection'); });
+        
+        // Simplified boot detection - hide overlay when React renders content
+        function hideOverlay(){
+          if (appBooted) return;
+          appBooted = true;
+          
+          var o = document.getElementById('boot-overlay');
+          if (o) {
+            o.style.transition = 'opacity 0.3s ease-out';
+            o.style.opacity = '0';
+            setTimeout(function(){ 
+              if (o && o.parentNode) o.parentNode.removeChild(o); 
+            }, 300);
+          }
+          
+          // Clean up observers and timers
+          if (observer) { observer.disconnect(); observer = null; }
+          if (checkInterval) { clearInterval(checkInterval); checkInterval = null; }
+          if (bootTimeout) { clearTimeout(bootTimeout); bootTimeout = null; }
+        }
+        
+        // Check if React has rendered content
+        function checkForContent(){
+          var root = document.getElementById('root');
+          if (!root) return false;
+          
+          // Simple check: does root have any child elements?
+          // React 18 with createRoot will add a div as soon as it starts rendering
+          if (root.children && root.children.length > 0) {
+            hideOverlay();
+            return true;
+          }
+          return false;
+        }
+        
+        // Use MutationObserver to detect when React adds content
+        try {
+          var root = document.getElementById('root');
+          if (root && window.MutationObserver) {
+            observer = new MutationObserver(function(mutations) {
+              checkForContent();
+            });
+            observer.observe(root, { childList: true, subtree: true });
+          }
+        } catch(e) {
+          console.error('MutationObserver setup failed:', e);
+        }
+        
+        // Fallback: poll every 100ms
+        checkInterval = setInterval(checkForContent, 100);
+        
+        // Safety timeout: show error after 10 seconds
+        bootTimeout = setTimeout(function(){
+          if (!appBooted) {
+            showError('App failed to initialize within 10 seconds. Please refresh the page or check your connection.');
+            // Clean up
+            if (observer) { observer.disconnect(); observer = null; }
+            if (checkInterval) { clearInterval(checkInterval); checkInterval = null; }
+          }
+        }, 10000);
+        
+        // Try to check immediately if DOM is already ready
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+          setTimeout(checkForContent, 0);
+        } else {
+          document.addEventListener('DOMContentLoaded', function(){ 
+            setTimeout(checkForContent, 0); 
+          });
+        }
+      })();
+    </script>
+    <!-- Lightweight GLB/VRM viewer for avatar rendering in dialogue -->
+    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+  </body>
+</html>
