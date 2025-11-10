@@ -24,7 +24,11 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - name: Build with backend URL
+        run: npm run build
+        env:
+          # Public backend URL for the frontend build (no secret)
+          VITE_BACKEND_URL: https://language-game-dvkf.onrender.com
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist  # Vite's default output
